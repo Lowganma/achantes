@@ -29,3 +29,8 @@ small { opacity: .8; }
 .item-gif img { border-radius: 0; }
 .item-gif input { margin-top: .35rem; width: 100%; font-size: .8rem; }
 .item .resize-handle { z-index: 2; }
+
+
+.gif-controls { display: grid; grid-template-columns: 1fr auto; gap: .35rem; margin-top: .35rem; }
+.gif-controls input { font-size: .8rem; padding: .45rem; }
+.gif-controls button { padding: .45rem .55rem; border-radius: 8px; font-size: .75rem; }
