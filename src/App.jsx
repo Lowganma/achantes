@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 const STORAGE_KEY = 'achantes-room-v1'
 
@@ -20,6 +20,10 @@ const defaultRoom = {
   wallColor: '#2f2648',
   style: 'grunge-neon',
   items: [],
+  collage: {
+    layers: [],
+    strokes: [],
+  },
 }
 
 function clamp(v, min, max) {
@@ -31,13 +35,20 @@ function App() {
   const [room, setRoom] = useState(defaultRoom)
   const [draggingId, setDraggingId] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [brushColor, setBrushColor] = useState('#f5e663')
+  const [brushSize, setBrushSize] = useState(5)
+  const [drawMode, setDrawMode] = useState(false)
+  const [pastingUrl, setPastingUrl] = useState('')
   const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
+  const [currentStroke, setCurrentStroke] = useState([])
+  const canvasRef = useRef(null)
+  const mainRef = useRef(null)
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) {
       const parsed = JSON.parse(saved)
-      setRoom(parsed)
+      setRoom({ ...defaultRoom, ...parsed, collage: { layers: [], strokes: [], ...(parsed.collage || {}) } })
       setStage('room')
     }
   }, [])
@@ -51,6 +62,39 @@ function App() {
     if (room.style === 'retro-pop') return `radial-gradient(circle at 20% 20%, #ff4d9d, ${room.wallColor})`
     return `linear-gradient(160deg, ${room.wallColor}, #180f28)`
   }, [room.style, room.wallColor])
+
+  useEffect(() => {
+    if (stage !== 'room') return
+    const canvas = canvasRef.current
+    const host = mainRef.current
+    if (!canvas || !host) return
+
+    canvas.width = host.clientWidth
+    canvas.height = host.clientHeight
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    room.collage.strokes.forEach((stroke) => {
+      if (stroke.points.length < 2) return
+      ctx.strokeStyle = stroke.color
+      ctx.lineWidth = stroke.size
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      stroke.points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y)
+        else ctx.lineTo(p.x, p.y)
+      })
+      ctx.stroke()
+    })
+
+    room.collage.layers.forEach((layer) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => ctx.drawImage(img, layer.x, layer.y, layer.w, layer.h)
+      img.src = layer.src
+    })
+  }, [room.collage, room.style, room.wallColor, stage])
 
   const addItem = (type) => {
     const base = { id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '' }
@@ -66,10 +110,20 @@ function App() {
     setRoom((prev) => ({ ...prev, items: [...prev.items, { ...base, ...byType[type] }] }))
   }
 
+  const addBackgroundImage = (src, x = 40, y = 40) => {
+    setRoom((prev) => ({
+      ...prev,
+      collage: {
+        ...prev.collage,
+        layers: [...prev.collage.layers, { id: randomId(), src, x, y, w: 220, h: 160 }],
+      },
+    }))
+  }
+
   const updateItem = (id, patch) => setRoom((prev) => ({ ...prev, items: prev.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }))
 
   const onDrag = (event) => {
-    if (!draggingId) return
+    if (!draggingId || drawMode) return
     const rect = event.currentTarget.getBoundingClientRect()
     const x = clamp(event.clientX - rect.left - 60, 0, rect.width - 120)
     const y = clamp(event.clientY - rect.top - 24, 0, rect.height - 60)
@@ -78,8 +132,7 @@ function App() {
 
   const createRoom = (e) => {
     e.preventDefault()
-    const next = { ...room, ...form }
-    setRoom(next)
+    setRoom((prev) => ({ ...prev, ...form }))
     setStage('room')
   }
 
@@ -89,6 +142,50 @@ function App() {
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
+
+  const getCanvasPoint = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect()
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
+
+  const startStroke = (e) => {
+    if (!drawMode) return
+    setCurrentStroke([getCanvasPoint(e)])
+  }
+
+  const moveStroke = (e) => {
+    if (!drawMode || currentStroke.length === 0) return
+    setCurrentStroke((prev) => [...prev, getCanvasPoint(e)])
+  }
+
+  const endStroke = () => {
+    if (!drawMode || currentStroke.length < 2) {
+      setCurrentStroke([])
+      return
+    }
+    const stroke = { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }
+    setRoom((prev) => ({ ...prev, collage: { ...prev.collage, strokes: [...prev.collage.strokes, stroke] } }))
+    setCurrentStroke([])
+  }
+
+  useEffect(() => {
+    const onPaste = (event) => {
+      if (stage !== 'room') return
+      const items = event.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (!file) continue
+          const reader = new FileReader()
+          reader.onload = () => addBackgroundImage(reader.result)
+          reader.readAsDataURL(file)
+        }
+      }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [stage])
 
   if (stage === 'landing') {
     return (
@@ -120,10 +217,27 @@ function App() {
         <p>{room.description}</p>
         <button onClick={copyInvite}>{copied ? '¡Copiado!' : 'Copiar invitación'}</button>
         <hr />
-        <h4>Módulos</h4>
+        <h4>Collage de fondo</h4>
+        <button onClick={() => setDrawMode((v) => !v)}>{drawMode ? 'Salir modo dibujo' : 'Dibujar fondo'}</button>
+        <label>Color <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} /></label>
+        <label>Tamaño <input type="range" min="1" max="24" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} /></label>
+        <input placeholder="Pega URL de imagen" value={pastingUrl} onChange={(e) => setPastingUrl(e.target.value)} />
+        <button onClick={() => pastingUrl && addBackgroundImage(pastingUrl, 60, 60)}>Agregar imagen al fondo</button>
+        <button onClick={() => setRoom((prev) => ({ ...prev, collage: { layers: [], strokes: [] } }))}>Limpiar fondo</button>
+        <small>Tip: también puedes copiar y pegar imágenes (Ctrl/Cmd + V).</small>
+        <hr />
+        <h4>Módulos flotantes</h4>
         {moduleOptions.map((m) => <button key={m.type} onClick={() => addItem(m.type)}>{m.label}</button>)}
       </aside>
-      <main style={{ background: roomGradient }} onMouseMove={onDrag} onMouseUp={() => setDraggingId(null)}>
+      <main ref={mainRef} style={{ background: roomGradient }} onMouseMove={onDrag} onMouseUp={() => { setDraggingId(null); endStroke() }}>
+        <canvas
+          ref={canvasRef}
+          className={`bg-canvas ${drawMode ? 'drawing' : ''}`}
+          onMouseDown={startStroke}
+          onMouseMove={moveStroke}
+          onMouseUp={endStroke}
+          onMouseLeave={endStroke}
+        />
         {room.items.map((item) => (
           <div key={item.id} className={`item item-${item.type}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h }} onMouseDown={() => setDraggingId(item.id)}>
             {(item.type === 'poster' || item.type === 'gif') && <img src={item.content} alt={item.type} />}

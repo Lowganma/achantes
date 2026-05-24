@@ -1,7 +1,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0c0912; color: #f0e8ff; }
 button, input, textarea, select { font: inherit; }
-.landing { display: grid; place-items: center; gap: 1rem; background: radial-gradient(circle at top, #3b275e, #0c0912); padding: 2rem; }
+.landing { display: grid; place-items: center; gap: 1rem; background: radial-gradient(circle at top, #3b275e, #0c0912); padding: 2rem; min-height: 100vh; }
 header h1 { font-size: 3rem; margin: 0; }
 header p { margin: 0; text-align: center; opacity: .85; }
 .card { width: min(520px, 100%); background: #1d1730; border: 1px solid #5f4b8b; border-radius: 16px; padding: 1rem; display: grid; gap: .75rem; }
@@ -10,8 +10,11 @@ button { border: 0; padding: .65rem .8rem; border-radius: 12px; background: #9b5
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 280px 1fr; }
 aside { background: #120d1f; border-right: 1px solid #402d63; padding: 1rem; display: grid; align-content: start; gap: .5rem; }
 main { position: relative; overflow: hidden; }
-.item { position: absolute; padding: .5rem; border: 1px dashed #ddd; background: rgba(0,0,0,.35); border-radius: 10px; user-select: none; }
+.bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; cursor: default; }
+.bg-canvas.drawing { cursor: crosshair; }
+.item { position: absolute; padding: .5rem; border: 1px dashed #ddd; background: rgba(0,0,0,.35); border-radius: 10px; user-select: none; z-index: 1; }
 .item img { width: 100%; border-radius: 8px; display: block; }
 .item-postit { background: #ffe663; color: #2f1d00; }
 .item-signwall { background: rgba(255,255,255,.92); color: #1a1328; }
 .item textarea { width: 100%; min-height: 70px; }
+small { opacity: .8; }
