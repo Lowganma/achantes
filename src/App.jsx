@@ -44,6 +44,8 @@ function App() {
   const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
   const [currentStroke, setCurrentStroke] = useState([])
   const [selectedLayerId, setSelectedLayerId] = useState(null)
+  const [selectedItemId, setSelectedItemId] = useState(null)
+  const [resizeItemId, setResizeItemId] = useState(null)
   const mainRef = useRef(null)
   const backCanvasRef = useRef(null)
   const frontCanvasRef = useRef(null)
@@ -101,7 +103,7 @@ function App() {
     const base = { id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '' }
     const byType = {
       poster: { content: 'https://images.unsplash.com/photo-1516280440614-37939bbacd81?w=600' },
-      gif: { content: 'https://media.giphy.com/media/TilmLMmWrRYYHjLfub/giphy.gif' },
+      gif: { content: 'https://media.giphy.com/media/TilmLMmWrRYYHjLfub/giphy.gif', w: 240, h: 160 },
       text: { content: 'ACHANTE VIBES ✦' },
       postit: { content: 'No olvides invitar al combo 🔥', w: 160, h: 160 },
       player: { content: 'https://open.spotify.com/' },
@@ -202,6 +204,11 @@ function App() {
       if (!layer) return
       updateLayer(dragLayerId, { x: clamp(event.clientX - rect.left - layer.w / 2, 0, rect.width - layer.w), y: clamp(event.clientY - rect.top - layer.h / 2, 0, rect.height - layer.h) })
     }
+    if (resizeItemId) {
+      const item = room.items.find((it) => it.id === resizeItemId)
+      if (!item) return
+      updateItem(resizeItemId, { w: clamp(event.clientX - rect.left - item.x, 80, rect.width - item.x), h: clamp(event.clientY - rect.top - item.y, 80, rect.height - item.y) })
+    }
     if (resizeLayerId) {
       const layer = room.collage.layers.find((l) => l.id === resizeLayerId)
       if (!layer) return
@@ -240,7 +247,7 @@ function App() {
         {moduleOptions.map((m) => <button key={m.type} onClick={() => addItem(m.type)}>{m.label}</button>)}
       </aside>
 
-      <main ref={mainRef} style={{ background: roomGradient }} onMouseMove={onMainMove} onMouseUp={() => { setDraggingId(null); setDragLayerId(null); setResizeLayerId(null); endStroke() }}>
+      <main ref={mainRef} style={{ background: roomGradient }} onMouseMove={onMainMove} onMouseUp={() => { setDraggingId(null); setDragLayerId(null); setResizeLayerId(null); setResizeItemId(null); endStroke() }}>
         <canvas ref={backCanvasRef} className="bg-canvas" />
 
         {room.collage.layers.sort((a, b) => a.z - b.z).map((layer) => (
@@ -265,13 +272,20 @@ function App() {
         />
 
         {room.items.map((item) => (
-          <div key={item.id} className={`item item-${item.type}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h }} onMouseDown={() => setDraggingId(item.id)}>
+          <div
+            key={item.id}
+            className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`}
+            style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h }}
+            onMouseDown={() => { setSelectedItemId(item.id); if (!drawMode) setDraggingId(item.id) }}
+          >
             {(item.type === 'poster' || item.type === 'gif') && <img src={item.content} alt={item.type} />}
+            {item.type === 'gif' && <input value={item.content} onChange={(e) => updateItem(item.id, { content: e.target.value })} placeholder="URL GIF" />}
             {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(e) => updateItem(item.id, { content: e.target.textContent })}>{item.content}</h5>}
             {item.type === 'postit' && <textarea value={item.content} onChange={(e) => updateItem(item.id, { content: e.target.value })} />}
             {item.type === 'player' && <a href={item.content} target="_blank" rel="noreferrer">Abrir reproductor</a>}
             {item.type === 'dice' && <button onClick={() => updateItem(item.id, { content: `🎲 ${Math.floor(Math.random() * 6) + 1}` })}>{item.content}</button>}
             {item.type === 'signwall' && <textarea value={item.content} onChange={(e) => updateItem(item.id, { content: e.target.value })} />}
+            <button className="resize-handle" onMouseDown={(e) => { e.stopPropagation(); setResizeItemId(item.id) }} aria-label="resize" />
           </div>
         ))}
       </main>
