@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useCanvasViewport, clamp } from './hooks/useCanvasViewport'
-import { createModuleItem, moduleOptions } from './models/modules'
+import { createModuleItem, moduleOptions, normalizeModuleItem } from './models/modules'
 
 // =========================
 // Configuración base canvas
@@ -80,7 +80,17 @@ const sanitizeRoomState = (value) => {
   const normalized = normalizeRoomState(value)
   return {
     ...normalized,
-    items: Array.isArray(normalized.items) ? normalized.items.filter(Boolean) : [],
+    items: (Array.isArray(normalized.items) ? normalized.items : [])
+      .map((item) => normalizeModuleItem({
+        item,
+        clamp,
+        worldWidth: WORLD_WIDTH,
+        worldHeight: WORLD_HEIGHT,
+        baseZ: Z_BASE_ITEM,
+        maxZ: MAX_LAYER_Z,
+        randomId,
+      }))
+      .filter(Boolean),
     collage: {
       ...normalized.collage,
       layers: (Array.isArray(normalized.collage.layers) ? normalized.collage.layers : []).map(normalizeLayer).filter(Boolean),
