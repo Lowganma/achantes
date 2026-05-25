@@ -8,6 +8,9 @@ const WORLD_WIDTH = 6000
 const WORLD_HEIGHT = 4000
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 3
+const MENU_WIDTH_KEY = 'achantes-menu-width-v1'
+const MIN_MENU_WIDTH = 240
+const MAX_MENU_WIDTH = 460
 
 // Z-index lógico por familias
 const Z_BASE_BACKGROUND = 1
@@ -36,6 +39,7 @@ const defaultRoom = {
   name: 'Mi Achante',
   description: 'Un cuarto nostálgico para panas',
   wallColor: '#2f2648',
+  backgroundImageUrl: '',
   style: 'grunge-neon',
   items: [],
   collage: { layers: [], strokesBack: [], strokesFront: [] },
@@ -50,6 +54,7 @@ const normalizeRoomState = (value) => ({
     strokesFront: [],
     ...((value && value.collage) || {}),
   },
+  drawLayers: (value && value.drawLayers) || { back: 'Dibujo fondo', front: 'Dibujo frontal' },
 })
 
 const normalizeGifUrl = (rawUrl = '') => {
@@ -82,10 +87,13 @@ function App() {
   const [selectedItemId, setSelectedItemId] = useState(null)
   const [pastingUrl, setPastingUrl] = useState('')
   const [menuCollapsed, setMenuCollapsed] = useState(false)
+  const [menuWidth, setMenuWidth] = useState(() => {
+    const raw = Number(localStorage.getItem(MENU_WIDTH_KEY))
+    return Number.isFinite(raw) && raw > 0 ? clamp(raw, MIN_MENU_WIDTH, MAX_MENU_WIDTH) : 300
+  })
+  const [showShortcuts, setShowShortcuts] = useState(false)
   const [showLayerLabels, setShowLayerLabels] = useState(false)
-  const [handMode, setHandMode] = useState(false)
-
-  const [drawMode, setDrawMode] = useState(false)
+  const [activeTool, setActiveTool] = useState('pencil')
   const [drawTarget, setDrawTarget] = useState('front')
   const [brushColor, setBrushColor] = useState('#f5e663')
   const [brushSize, setBrushSize] = useState(5)
@@ -112,8 +120,12 @@ function App() {
   const interactionStartRef = useRef(null)
   const interactionDirtyRef = useRef(false)
   const strokeSessionRef = useRef(0)
+  const menuResizeRef = useRef(null)
+  const cropStartRef = useRef(null)
+  const [cropRect, setCropRect] = useState(null)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
+  useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
 
   useEffect(() => {
     if (!mainRef.current || typeof ResizeObserver === 'undefined') return
@@ -148,6 +160,21 @@ function App() {
     host.addEventListener('wheel', onNativeWheel, { passive: false })
     return () => host.removeEventListener('wheel', onNativeWheel)
   }, [viewport.width, viewport.height])
+
+  useEffect(() => {
+    const onMove = (event) => {
+      if (!menuResizeRef.current) return
+      const nextWidth = clamp(menuResizeRef.current.startW + (event.clientX - menuResizeRef.current.startX), MIN_MENU_WIDTH, MAX_MENU_WIDTH)
+      setMenuWidth(nextWidth)
+    }
+    const onUp = () => { menuResizeRef.current = null }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   const roomGradient = useMemo(() => {
     if (room.style === 'punk-zine') return `linear-gradient(135deg, ${room.wallColor}, #111)`
@@ -295,7 +322,7 @@ function App() {
       if (stroke.points.length < 2) return
       ctx.strokeStyle = stroke.color
       ctx.lineWidth = stroke.size
-      ctx.lineCap = 'round'
+      ctx.lineCap = stroke.tool === 'pencil' ? 'butt' : 'round'
       ctx.lineJoin = 'round'
       ctx.beginPath()
       stroke.points.forEach((point, index) => (index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
@@ -305,25 +332,50 @@ function App() {
 
   const startStroke = (event) => {
     if (event.button !== 0) return
-    if (drawMode && !handMode) {
+    if (activeTool === 'crop') {
+      const point = getCanvasPoint(event)
+      cropStartRef.current = point
+      setCropRect({ x: point.x, y: point.y, w: 0, h: 0 })
+      return
+    }
+    if (activeTool !== 'hand') {
       strokeSessionRef.current += 1
-      setCurrentStroke([getCanvasPoint(event)])
+      const point = getCanvasPoint(event)
+      if (activeTool === 'eraser') {
+        const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
+        setRoomWithHistory((prevRoom) => ({
+          ...prevRoom,
+          collage: { ...prevRoom.collage, [key]: prevRoom.collage[key].filter((st) => !st.points.some((pt) => Math.hypot(pt.x - point.x, pt.y - point.y) <= Math.max(16, brushSize * 2))) },
+        }))
+      } else setCurrentStroke([point])
     }
   }
 
   const moveStroke = (event) => {
-    if (drawMode && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
+    if (activeTool === 'crop' && cropStartRef.current) {
+      const p = getCanvasPoint(event)
+      const s = cropStartRef.current
+      setCropRect({ x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) })
+      return
+    }
+    if (activeTool !== 'hand' && activeTool !== 'eraser' && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   }
 
   const endStroke = (sessionId = strokeSessionRef.current) => {
     if (sessionId !== strokeSessionRef.current) return
-    if (!drawMode || currentStroke.length < 2) {
+    if (activeTool === 'crop') {
+      cropStartRef.current = null
+      return
+    }
+    if (activeTool === 'eraser') return
+    if (activeTool === 'hand' || currentStroke.length < 2) {
       setCurrentStroke([])
       return
     }
 
     const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
-    const stroke = { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }
+    const toolSize = activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : Math.max(brushSize, 6)
+    const stroke = { id: randomId(), color: brushColor, size: toolSize, points: currentStroke, tool: activeTool }
     setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
@@ -363,7 +415,7 @@ function App() {
 
   useEffect(() => {
     if (stage !== 'room') return
-    const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: brushSize } : null
+    const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : Math.max(brushSize, 6) } : null
     drawStrokes(backCanvasRef.current, room.collage.strokesBack, drawTarget === 'back' ? preview : null)
     drawStrokes(frontCanvasRef.current, room.collage.strokesFront, drawTarget === 'front' ? preview : null)
   }, [stage, room.collage.strokesBack, room.collage.strokesFront, currentStroke, drawTarget, brushColor, brushSize])
@@ -397,14 +449,14 @@ function App() {
       }
       if (!activeField && key === 'a') {
         event.preventDefault()
-        setHandMode((value) => !value)
-        setDrawMode(false)
+        setActiveTool((value) => (value === 'hand' ? 'pencil' : 'hand'))
         return
       }
       if (key === 'escape') {
         setSelectedItemId(null)
         setSelectedLayerId(null)
-        setDrawMode(false)
+        setCropRect(null)
+        setActiveTool('pencil')
       }
     }
 
@@ -418,7 +470,7 @@ function App() {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [selectedItemId, selectedLayerId, currentStroke, drawMode, handMode])
+  }, [selectedItemId, selectedLayerId, currentStroke, activeTool])
 
   useEffect(() => {
     const onPaste = (event) => {
@@ -465,7 +517,7 @@ function App() {
       return
     }
 
-    if (draggingId && !drawMode) {
+    if (draggingId && activeTool !== 'hand' && activeTool !== 'pencil' && activeTool !== 'brush' && activeTool !== 'eraser' && activeTool !== 'crop') {
       interactionDirtyRef.current = true
       updateItem(draggingId, {
         x: clamp(point.x - 60, 0, WORLD_WIDTH - 120),
@@ -570,7 +622,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`}>
+    <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`} style={{ '--menu-width': `${menuWidth}px` }}>
       <aside>
         <button className="menu-toggle" onClick={() => setMenuCollapsed((value) => !value)}>
           {menuCollapsed ? '▶ Abrir menú' : '◀ Ocultar menú'}
@@ -595,21 +647,24 @@ function App() {
             <hr />
 
             <h4>Collage fondo</h4>
-            <button onClick={() => { setDrawMode((value) => !value); setHandMode(false) }}>
-              {drawMode ? 'Salir dibujo' : 'Dibujar'}
-            </button>
-            <button onClick={() => { setHandMode((value) => !value); setDrawMode(false) }}>
-              {handMode ? 'Mano activa (A)' : 'Activar mano (A)'}
-            </button>
+            <button onClick={() => setShowShortcuts(true)}>Atajos</button>
+            <div className="tool-grid">
+              <button className={activeTool === 'pencil' ? 'tool-active' : ''} onClick={() => setActiveTool('pencil')}>Lápiz</button>
+              <button className={activeTool === 'brush' ? 'tool-active' : ''} onClick={() => setActiveTool('brush')}>Pincel</button>
+              <button className={activeTool === 'eraser' ? 'tool-active' : ''} onClick={() => setActiveTool('eraser')}>Borrador</button>
+              <button className={activeTool === 'crop' ? 'tool-active' : ''} onClick={() => setActiveTool('crop')}>Recorte</button>
+              <button className={activeTool === 'hand' ? 'tool-active' : ''} onClick={() => setActiveTool('hand')}>Mano (A)</button>
+            </div>
             <label>
               Capa dibujo
               <select value={drawTarget} onChange={(event) => setDrawTarget(event.target.value)}>
-                <option value="back">Detrás de imágenes</option>
-                <option value="front">Encima de imágenes</option>
+                <option value="back">Dibujo fondo</option>
+                <option value="front">Dibujo frontal</option>
               </select>
             </label>
             <label>
               Color
+              <span className="color-chip" style={{ backgroundColor: brushColor }} />
               <input type="color" value={brushColor} onChange={(event) => setBrushColor(event.target.value)} />
             </label>
             <label>
@@ -617,6 +672,10 @@ function App() {
               <input type="range" min="1" max="30" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
             </label>
             <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button>
+            <h4>Fondo de sala</h4>
+            <input placeholder="URL de imagen de fondo" value={room.backgroundImageUrl || ''} onChange={(event) => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: event.target.value.trim() }), { recordHistory: false })} />
+            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: (prevRoom.backgroundImageUrl || '').trim() }))}>Aplicar fondo</button>
+            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: '' }))}>Quitar fondo de sala</button>
             <input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(event) => setPastingUrl(event.target.value)} />
             <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>
               Agregar al fondo
@@ -635,6 +694,19 @@ function App() {
           </>
         )}
       </aside>
+      {!menuCollapsed && <div className="menu-resizer" onMouseDown={(event) => { menuResizeRef.current = { startX: event.clientX, startW: menuWidth }; event.preventDefault() }} />}
+      {showShortcuts && (
+        <div className="shortcuts-modal" onClick={() => setShowShortcuts(false)}>
+          <div className="shortcuts-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Atajos</h3>
+            <ul>
+              <li>Ctrl/Cmd + Z: deshacer trazo</li><li>Espacio + arrastrar: mover vista</li><li>A: activar/desactivar modo mano</li>
+              <li>Escape: cancelar selección o salir herramienta</li><li>Ctrl + rueda: zoom</li><li>Suprimir/Backspace: eliminar seleccionado</li>
+            </ul>
+            <button onClick={() => setShowShortcuts(false)}>Cerrar</button>
+          </div>
+        </div>
+      )}
 
       <main
         ref={mainRef}
@@ -644,7 +716,7 @@ function App() {
         onMouseUp={clearDraggingState}
         onMouseLeave={clearDraggingState}
         onMouseDown={(event) => {
-          const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
+          const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || activeTool === 'hand'))
           if (!shouldPan) return
           event.preventDefault()
           setIsPanning(true)
@@ -673,6 +745,11 @@ function App() {
           style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}
         >
           <canvas ref={backCanvasRef} className="bg-canvas" />
+          {room.backgroundImageUrl && (
+            <div className="room-background-image">
+              <img src={room.backgroundImageUrl} alt="Fondo de sala" />
+            </div>
+          )}
 
           {room.collage.layers.map((layer) => (
             <div
@@ -682,7 +759,9 @@ function App() {
               onMouseDown={() => {
                 setSelectedLayerId(layer.id)
                 setSelectedItemId(null)
-                if (!drawMode && !handMode) {
+                if (activeTool === 'hand') return
+                if (activeTool === 'pencil' || activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'crop') return
+                {
                   interactionStartRef.current = room
                   interactionDirtyRef.current = false
                   setDragLayerId(layer.id)
@@ -697,12 +776,13 @@ function App() {
 
           <canvas
             ref={frontCanvasRef}
-            className={`bg-canvas front ${drawMode && !handMode ? 'drawing' : ''}`}
+            className={`bg-canvas front ${(activeTool === 'pencil' || activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'crop') ? 'drawing' : ''}`}
             onMouseDown={startStroke}
             onMouseMove={moveStroke}
             onMouseUp={() => endStroke(strokeSessionRef.current)}
             onMouseLeave={() => endStroke(strokeSessionRef.current)}
           />
+          {cropRect && activeTool === 'crop' && <div className="crop-rect" style={{ left: cropRect.x, top: cropRect.y, width: cropRect.w, height: cropRect.h }} />}
 
           {room.items.map((item) => (
             <div
@@ -712,7 +792,9 @@ function App() {
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
-                if (!drawMode && !handMode) {
+                if (activeTool === 'hand') return
+                if (activeTool === 'pencil' || activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'crop') return
+                {
                   interactionStartRef.current = room
                   interactionDirtyRef.current = false
                   setDraggingId(item.id)
