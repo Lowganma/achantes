@@ -1,35 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-// =========================
-// Configuración base canvas
-// =========================
-const STORAGE_KEY = 'achantes-room-v2'
+const STORAGE_KEY = 'achantes-room-v3'
+const SIDEBAR_SIZE_KEY = 'achantes-sidebar-size-v1'
 const WORLD_WIDTH = 6000
 const WORLD_HEIGHT = 4000
-const MIN_ZOOM = 0.25
-const MAX_ZOOM = 3
-
-// Z-index lógico por familias
-const Z_BASE_BACKGROUND = 1
-const Z_BASE_ITEM = 2
-const MAX_LAYER_Z = 50
-
-const moduleOptions = [
-  { type: 'text', label: 'Texto decorativo' },
-  { type: 'postit', label: 'Post-it' },
-  { type: 'player', label: 'Reproductor link' },
-  { type: 'dice', label: 'Dado simple' },
-  { type: 'signwall', label: 'Muro firmas' },
-  { type: 'gif', label: 'GIF URL' },
-]
+const MIN_ZOOM = 0.2
+const MAX_ZOOM = 4
+const MIN_SIDEBAR_WIDTH = 240
+const MAX_SIDEBAR_WIDTH = 520
 
 const randomId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
-
 const isFormField = (element) => {
   if (!element) return false
-  const tagName = element.tagName?.toLowerCase()
-  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || element.isContentEditable
+  const tag = element.tagName?.toLowerCase()
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || element.isContentEditable
 }
 
 const defaultRoom = {
@@ -37,62 +22,38 @@ const defaultRoom = {
   description: 'Un cuarto nostálgico para panas',
   wallColor: '#2f2648',
   style: 'grunge-neon',
+  background: { type: 'color', value: '#2f2648', fit: 'cover', locked: false },
+  layers: [
+    { id: 'layer-bg', name: 'Fondo', kind: 'background', visible: true, locked: true },
+    { id: 'layer-collage', name: 'Imágenes/GIFs', kind: 'media', visible: true, locked: false },
+    { id: 'layer-draw', name: 'Dibujo', kind: 'drawing', visible: true, locked: false },
+  ],
+  activeLayerId: 'layer-draw',
   items: [],
-  collage: { layers: [], strokesBack: [], strokesFront: [] },
+  strokes: [],
 }
 
-const normalizeGifUrl = (rawUrl = '') => {
-  const value = rawUrl.trim()
-  if (!value) return ''
-  if (/\.(gif|webp)(\?|$)/i.test(value) || value.startsWith('data:image/')) return value
-  const tenorMatch = value.match(/tenor\.com\/(?:view|es\/view)\/[^/]*-(\d+)/i)
-  if (tenorMatch) return `https://media.tenor.com/${tenorMatch[1]}/tenor.gif`
-  const giphyMatch = value.match(/giphy\.com\/(?:gifs|media)\/[^/]*-([a-zA-Z0-9]+)$/i)
-  if (giphyMatch) return `https://media.giphy.com/media/${giphyMatch[1]}/giphy.gif`
-  return value
-}
-
-const defaultItemsByType = {
-  text: { content: 'ACHANTE VIBES ✦' },
-  postit: { content: 'No olvides invitar al combo 🔥', w: 160, h: 160 },
-  player: { content: 'https://open.spotify.com/' },
-  dice: { content: '🎲 1' },
-  signwall: { content: 'Firma aquí:\n- @pana1: brutal\n- @pana2: qué nivel', w: 240, h: 170 },
-  gif: { content: '', editUrl: '', w: 240, h: 180, loadError: '' },
-}
+const initialHistory = (snapshot) => ({ undoStack: [snapshot], redoStack: [] })
 
 function App() {
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
-  const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
-
-  const [copied, setCopied] = useState(false)
-  const [selectedLayerId, setSelectedLayerId] = useState(null)
-  const [selectedItemId, setSelectedItemId] = useState(null)
-  const [pastingUrl, setPastingUrl] = useState('')
-  const [menuCollapsed, setMenuCollapsed] = useState(false)
-  const [showLayerLabels, setShowLayerLabels] = useState(false)
-  const [handMode, setHandMode] = useState(false)
-
-  const [drawMode, setDrawMode] = useState(false)
-  const [drawTarget, setDrawTarget] = useState('front')
+  const [history, setHistory] = useState(initialHistory(defaultRoom))
+  const [selectedItemIds, setSelectedItemIds] = useState([])
+  const [selectedStrokeIds, setSelectedStrokeIds] = useState([])
+  const [tool, setTool] = useState('move')
   const [brushColor, setBrushColor] = useState('#f5e663')
   const [brushSize, setBrushSize] = useState(5)
+  const [brushOpacity, setBrushOpacity] = useState(1)
   const [currentStroke, setCurrentStroke] = useState([])
-
-  const [draggingId, setDraggingId] = useState(null)
-  const [dragLayerId, setDragLayerId] = useState(null)
-  const [resizeLayerId, setResizeLayerId] = useState(null)
-  const [resizeItemId, setResizeItemId] = useState(null)
   const [viewport, setViewport] = useState({ width: 1, height: 1 })
-  const [spacePressed, setSpacePressed] = useState(false)
-  const [isPanning, setIsPanning] = useState(false)
   const [view, setView] = useState({ zoom: 1, panX: 0, panY: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const [spacePressed, setSpacePressed] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() => Number(localStorage.getItem(SIDEBAR_SIZE_KEY)) || 320)
 
   const mainRef = useRef(null)
-  const backCanvasRef = useRef(null)
-  const frontCanvasRef = useRef(null)
-  const drawTargetRef = useRef(drawTarget)
+  const drawCanvasRef = useRef(null)
   const panDragRef = useRef(null)
   // =========================
   // Historial global unificado
@@ -109,18 +70,18 @@ function App() {
     redoStackRef.current = []
   }
 
-  useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
+  const drawEnabled = tool === 'brush' || tool === 'pencil' || tool === 'marker' || tool === 'eraser'
+  const handMode = tool === 'hand' || spacePressed
 
-  useEffect(() => {
-    if (!mainRef.current || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(([entry]) => setViewport({ width: entry.contentRect.width, height: entry.contentRect.height }))
-    observer.observe(mainRef.current)
-    return () => observer.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const host = mainRef.current
-    if (!host) return
+  const commitRoom = (updater) => {
+    setRoom((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        setHistory((h) => ({ undoStack: [...h.undoStack, next], redoStack: [] }))
+      }
+      return next
+    })
+  }
 
     const onNativeWheel = (event) => {
       if (event.shiftKey && !event.ctrlKey) {
@@ -137,44 +98,34 @@ function App() {
       const cursorX = event.clientX - rect.left
       const cursorY = event.clientY - rect.top
 
-      setView((prev) => {
-        const nextZoom = clamp(prev.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM)
-        const worldX = (cursorX - prev.panX) / prev.zoom
-        const worldY = (cursorY - prev.panY) / prev.zoom
-        const rawPanX = cursorX - worldX * nextZoom
-        const rawPanY = cursorY - worldY * nextZoom
-        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * nextZoom)
-        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * nextZoom)
-        return { zoom: nextZoom, panX: clamp(rawPanX, minPanX, 0), panY: clamp(rawPanY, minPanY, 0) }
-      })
-    }
+  const redo = () => {
+    setHistory((h) => {
+      if (h.redoStack.length === 0) return h
+      const [next, ...rest] = h.redoStack
+      setRoom(next)
+      return { undoStack: [...h.undoStack, next], redoStack: rest }
+    })
+  }
 
-    host.addEventListener('wheel', onNativeWheel, { passive: false })
-    return () => host.removeEventListener('wheel', onNativeWheel)
-  }, [viewport.width, viewport.height])
+  const getCanvasPoint = (event) => {
+    const rect = mainRef.current.getBoundingClientRect()
+    return { x: (event.clientX - rect.left - view.panX) / view.zoom, y: (event.clientY - rect.top - view.panY) / view.zoom }
+  }
 
-  const roomGradient = useMemo(() => {
-    if (room.style === 'punk-zine') return `linear-gradient(135deg, ${room.wallColor}, #111)`
-    if (room.style === 'retro-pop') return `radial-gradient(circle at 20% 20%, #ff4d9d, ${room.wallColor})`
-    return `linear-gradient(160deg, ${room.wallColor}, #180f28)`
-  }, [room.style, room.wallColor])
+  useEffect(() => localStorage.setItem(SIDEBAR_SIZE_KEY, String(sidebarWidth)), [sidebarWidth])
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (!saved) return
-
     try {
       const parsed = JSON.parse(saved)
-      setRoom({ ...defaultRoom, ...parsed, collage: { layers: [], strokesBack: [], strokesFront: [], ...(parsed.collage || {}) } })
+      setRoom({ ...defaultRoom, ...parsed })
+      setHistory(initialHistory({ ...defaultRoom, ...parsed }))
       setStage('room')
-    } catch {
-      localStorage.removeItem(STORAGE_KEY)
-    }
+    } catch { localStorage.removeItem(STORAGE_KEY) }
   }, [])
 
-  useEffect(() => {
-    if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
-  }, [room, stage])
+  useEffect(() => { if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room)) }, [room, stage])
 
   useEffect(() => {
     if (stage !== 'room') return
@@ -284,21 +235,24 @@ function App() {
     }))
   }
 
-  const drawStrokes = (canvas, strokes, previewStroke) => {
+  useEffect(() => {
+    const canvas = drawCanvasRef.current
     if (!canvas) return
     canvas.width = WORLD_WIDTH
     canvas.height = WORLD_HEIGHT
     const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ;[...strokes, ...(previewStroke ? [previewStroke] : [])].forEach((stroke) => {
-      if (stroke.points.length < 2) return
+    ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT)
+    ;[...room.strokes, ...(currentStroke.length > 1 ? [{ id: 'preview', points: currentStroke, color: brushColor, size: brushSize, opacity: brushOpacity }] : [])].forEach((stroke) => {
+      if (!stroke.points || stroke.points.length < 2) return
+      ctx.globalAlpha = stroke.opacity ?? 1
       ctx.strokeStyle = stroke.color
       ctx.lineWidth = stroke.size
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.beginPath()
-      stroke.points.forEach((point, index) => (index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
+      stroke.points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
       ctx.stroke()
+      ctx.globalAlpha = 1
     })
   }
 
@@ -349,13 +303,6 @@ function App() {
     setRoom(snapshotRoom(next))
     requestAnimationFrame(() => { skipHistoryRef.current = false })
   }
-
-  useEffect(() => {
-    if (stage !== 'room') return
-    const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: brushSize } : null
-    drawStrokes(backCanvasRef.current, room.collage.strokesBack, drawTarget === 'back' ? preview : null)
-    drawStrokes(frontCanvasRef.current, room.collage.strokesFront, drawTarget === 'front' ? preview : null)
-  }, [stage, room.collage.strokesBack, room.collage.strokesFront, currentStroke, drawTarget, brushColor, brushSize])
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -448,118 +395,10 @@ function App() {
     return () => window.removeEventListener('paste', onPaste)
   }, [stage, room, view])
 
-  const onMainMove = (event) => {
-    const point = getCanvasPoint(event)
+  const createRoom = (e) => { e.preventDefault(); setStage('room') }
 
-    if (panDragRef.current) {
-      const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
-      setView((prevView) => {
-        const nextPanX = panStartX + (event.clientX - pointerStartX)
-        const nextPanY = panStartY + (event.clientY - pointerStartY)
-        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * prevView.zoom)
-        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * prevView.zoom)
-        return { ...prevView, panX: clamp(nextPanX, minPanX, 0), panY: clamp(nextPanY, minPanY, 0) }
-      })
-      return
-    }
-
-    if (draggingId && !drawMode) {
-      updateItem(draggingId, {
-        x: clamp(point.x - 60, 0, WORLD_WIDTH - 120),
-        y: clamp(point.y - 24, 0, WORLD_HEIGHT - 60),
-      })
-    }
-
-    if (dragLayerId) {
-      const layer = room.collage.layers.find((entry) => entry.id === dragLayerId)
-      if (layer) {
-        updateLayer(dragLayerId, {
-          x: clamp(point.x - layer.w / 2, 0, WORLD_WIDTH - layer.w),
-          y: clamp(point.y - layer.h / 2, 0, WORLD_HEIGHT - layer.h),
-        })
-      }
-    }
-
-    if (resizeItemId) {
-      const item = room.items.find((entry) => entry.id === resizeItemId)
-      if (item) {
-        updateItem(resizeItemId, {
-          w: clamp(point.x - item.x, 80, WORLD_WIDTH - item.x),
-          h: clamp(point.y - item.y, 80, WORLD_HEIGHT - item.y),
-        })
-      }
-    }
-
-    if (resizeLayerId) {
-      const layer = room.collage.layers.find((entry) => entry.id === resizeLayerId)
-      if (layer) {
-        updateLayer(resizeLayerId, {
-          w: clamp(point.x - layer.x, 60, WORLD_WIDTH - layer.x),
-          h: clamp(point.y - layer.y, 60, WORLD_HEIGHT - layer.y),
-        })
-      }
-    }
-  }
-
-  const clearDraggingState = () => {
-    setDraggingId(null)
-    setDragLayerId(null)
-    setResizeLayerId(null)
-    setResizeItemId(null)
-    setIsPanning(false)
-    panDragRef.current = null
-    endStroke()
-  }
-
-  const createRoom = (event) => {
-    event.preventDefault()
-    setRoom((prevRoom) => ({ ...prevRoom, ...form }))
-    setStage('room')
-  }
-
-  const copyInvite = async () => {
-    const invite = `${window.location.origin}/room/${room.name.toLowerCase().replaceAll(' ', '-')}`
-    await navigator.clipboard.writeText(invite)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-
-  const applyGifUrl = (itemId) => {
-    const item = room.items.find((entry) => entry.id === itemId)
-    if (!item) return
-    const nextUrl = normalizeGifUrl(item.editUrl || '')
-    if (!nextUrl) return
-    updateItem(itemId, { content: nextUrl, editUrl: nextUrl, loadError: '' })
-  }
-
-  if (stage === 'landing') {
-    return (
-      <div className="min-h-screen landing">
-        <header>
-          <h1>Achantes</h1>
-          <p>Arma tu achante</p>
-        </header>
-        <form className="card" onSubmit={createRoom}>
-          <h2>Crea tu sala</h2>
-          <input required placeholder="Nombre" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <textarea placeholder="Descripción" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-          <label>
-            Color de pared
-            <input type="color" value={form.wallColor} onChange={(event) => setForm({ ...form, wallColor: event.target.value })} />
-          </label>
-          <select value={form.style} onChange={(event) => setForm({ ...form, style: event.target.value })}>
-            <option value="grunge-neon">Grunge neón</option>
-            <option value="punk-zine">Punk zine</option>
-            <option value="retro-pop">Retro pop</option>
-          </select>
-          <button type="submit">Entrar a la sala</button>
-        </form>
-      </div>
-    )
-  }
-
-  return (
-    <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`}>
+  return stage === 'landing' ? <div className="landing"><form className="card" onSubmit={createRoom}><button type="submit">Entrar a la sala</button></form></div> : (
+    <div className="app-shell" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
       <aside>
         <button className="menu-toggle" onClick={() => setMenuCollapsed((value) => !value)}>
           {menuCollapsed ? '▶ Abrir menú' : '◀ Ocultar menú'}
@@ -658,85 +497,29 @@ function App() {
             Ajustar a pantalla
           </button>
         </div>
-
-        <div
-          className={`design-surface ${isPanning ? 'panning' : ''}`}
-          style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}
-        >
-          <canvas ref={backCanvasRef} className="bg-canvas" />
-
-          {room.collage.layers.map((layer) => (
-            <div
-              key={layer.id}
-              className={`bg-layer ${selectedLayerId === layer.id ? 'selected' : ''}`}
-              style={{ left: layer.x, top: layer.y, width: layer.w, height: layer.h, zIndex: layer.z || Z_BASE_BACKGROUND }}
-              onMouseDown={() => {
-                setSelectedLayerId(layer.id)
-                setSelectedItemId(null)
-                if (!drawMode && !handMode) setDragLayerId(layer.id)
-              }}
-            >
-              <img src={layer.src} alt="layer" draggable={false} />
-              {showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" />
-            </div>
-          ))}
-
-          <canvas
-            ref={frontCanvasRef}
-            className={`bg-canvas front ${drawMode && !handMode ? 'drawing' : ''}`}
-            onMouseDown={startStroke}
-            onMouseMove={moveStroke}
-            onMouseUp={endStroke}
-            onMouseLeave={endStroke}
-          />
-
-          {room.items.map((item) => (
-            <div
-              key={item.id}
-              className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`}
-              style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h, zIndex: item.z || Z_BASE_ITEM }}
-              onMouseDown={() => {
-                setSelectedItemId(item.id)
-                setSelectedLayerId(null)
-                if (!drawMode && !handMode) setDraggingId(item.id)
-              }}
-            >
-              {item.type === 'gif' && item.content && (
-                <img
-                  className="item-media"
-                  src={item.content}
-                  alt={item.type}
-                  draggable={false}
-                  onError={() => updateItem(item.id, { loadError: 'No se pudo cargar este GIF.' })}
-                  onLoad={() => item.loadError && updateItem(item.id, { loadError: '' })}
-                />
-              )}
-
-              {showLayerLabels && <span className="layer-badge">Z:{item.z || Z_BASE_ITEM}</span>}
-
-              {item.type === 'gif' && (
-                <div className="gif-controls" onMouseDown={(event) => event.stopPropagation()}>
-                  <input
-                    value={item.editUrl || ''}
-                    onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
-                    onKeyDown={(event) => event.key === 'Enter' && applyGifUrl(item.id)}
-                    placeholder="URL GIF"
-                  />
-                  <button type="button" onClick={() => applyGifUrl(item.id)}>Aplicar</button>
-                </div>
-              )}
-
-              {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
-              {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(event) => updateItem(item.id, { content: event.target.textContent })}>{item.content}</h5>}
-              {item.type === 'postit' && <textarea value={item.content} onChange={(event) => updateItem(item.id, { content: event.target.value })} />}
-              {item.type === 'player' && <a href={item.content} target="_blank" rel="noreferrer">Abrir reproductor</a>}
-              {item.type === 'dice' && <button onClick={() => updateItem(item.id, { content: `🎲 ${Math.floor(Math.random() * 6) + 1}` })}>{item.content}</button>}
-              {item.type === 'signwall' && <textarea value={item.content} onChange={(event) => updateItem(item.id, { content: event.target.value })} />}
-
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeItemId(item.id) }} aria-label="resize" />
-            </div>
-          ))}
+        <label>Tamaño<input type="range" min="1" max="40" value={brushSize} onChange={(e)=>setBrushSize(Number(e.target.value))} /></label>
+        <label>Opacidad<input type="range" min="0.1" max="1" step="0.05" value={brushOpacity} onChange={(e)=>setBrushOpacity(Number(e.target.value))} /></label>
+        <label>Color<input type="color" value={brushColor} onChange={(e)=>setBrushColor(e.target.value)} /></label>
+      </aside>
+      <div className="sidebar-resizer" onMouseDown={(e)=>{sidebarResizeRef.current={startX:e.clientX,startW:sidebarWidth}}} />
+      <main ref={mainRef} onMouseMove={(event)=>{
+        if (sidebarResizeRef.current) { const delta = event.clientX - sidebarResizeRef.current.startX; setSidebarWidth(clamp(sidebarResizeRef.current.startW + delta, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)); return }
+        if (panDragRef.current) { const dX = event.clientX - panDragRef.current.x; const dY = event.clientY - panDragRef.current.y; setView((v)=>({...v, panX: panDragRef.current.panX + dX, panY: panDragRef.current.panY + dY})); return }
+        if (dragEntityRef.current?.type === 'item') {
+          const point = getCanvasPoint(event)
+          const id = dragEntityRef.current.id
+          commitRoom((r)=>({ ...r, items: r.items.map((it)=>it.id===id?{...it,x:point.x-50,y:point.y-20}:it) }))
+        }
+        if (drawEnabled && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
+      }} onMouseUp={()=>{ sidebarResizeRef.current = null; panDragRef.current = null; dragEntityRef.current = null; if (currentStroke.length>1) commitRoom((r)=>({ ...r, strokes:[...r.strokes,{id:randomId(), points: currentStroke, color: brushColor, size: brushSize, opacity: brushOpacity}] })); setCurrentStroke([]); setIsPanning(false) }}
+      onWheel={(e)=>{
+        if (e.ctrlKey) { e.preventDefault(); const f = e.deltaY>0?0.9:1.1; setView((v)=>({...v,zoom:clamp(v.zoom*f,MIN_ZOOM,MAX_ZOOM)})); return }
+        if (e.shiftKey) setView((v)=>({...v, panX:v.panX-e.deltaY}))
+      }}>
+        <div className="viewport-tools"><button onClick={fitToContent}>Ajustar pantalla</button></div>
+        <div className="design-surface" style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}>
+          {room.items.map((item) => <div key={item.id} className={`item ${selectedItemIds.includes(item.id)?'selected':''}`} style={{left:item.x,top:item.y,width:item.w,height:item.h}} onMouseDown={(e)=>{ if (e.button!==0) return; setSelectedItemIds([item.id]); if (tool==='move') dragEntityRef.current={type:'item',id:item.id}; }}>{item.type==='gif'||item.type==='image'?<img src={item.content} draggable={false} alt="media"/>:item.content}</div>)}
+          <canvas ref={drawCanvasRef} className="bg-canvas front drawing" onMouseDown={(e)=>{ if (e.button!==0) return; if (handMode){ setIsPanning(true); panDragRef.current={x:e.clientX,y:e.clientY,panX:view.panX,panY:view.panY}; return } if (drawEnabled) setCurrentStroke([getCanvasPoint(e)]) }} />
         </div>
       </main>
     </div>
