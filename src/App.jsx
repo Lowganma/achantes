@@ -93,10 +93,13 @@ function App() {
   })
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showLayerLabels, setShowLayerLabels] = useState(false)
-  const [activeTool, setActiveTool] = useState('pencil')
+  const [activeTool, setActiveTool] = useState('select')
   const [drawTarget, setDrawTarget] = useState('front')
   const [brushColor, setBrushColor] = useState('#f5e663')
   const [brushSize, setBrushSize] = useState(5)
+  const [brushOpacity, setBrushOpacity] = useState(0.7)
+  const [brushFlow, setBrushFlow] = useState(0.6)
+  const [brushTaper, setBrushTaper] = useState(0.35)
   const [currentStroke, setCurrentStroke] = useState([])
 
   const [draggingId, setDraggingId] = useState(null)
@@ -320,13 +323,42 @@ function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ;[...strokes, ...(previewStroke ? [previewStroke] : [])].forEach((stroke) => {
       if (stroke.points.length < 2) return
-      ctx.strokeStyle = stroke.color
-      ctx.lineWidth = stroke.size
-      ctx.lineCap = stroke.tool === 'pencil' ? 'butt' : 'round'
-      ctx.lineJoin = 'round'
-      ctx.beginPath()
-      stroke.points.forEach((point, index) => (index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
-      ctx.stroke()
+      if (stroke.tool === 'eraser') {
+        ctx.save()
+        ctx.globalCompositeOperation = 'destination-out'
+        ctx.strokeStyle = '#000'
+        ctx.lineWidth = stroke.size
+        ctx.lineCap = 'round'
+      } else {
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.strokeStyle = stroke.color
+        ctx.lineWidth = stroke.size
+        ctx.lineCap = stroke.tool === 'pencil' ? 'butt' : 'round'
+        ctx.globalAlpha = stroke.tool === 'brush' ? (stroke.opacity ?? 0.7) : 1
+      }
+      if (stroke.tool === 'brush') {
+        const total = stroke.points.length - 1
+        for (let i = 1; i < stroke.points.length; i += 1) {
+          const p0 = stroke.points[i - 1]
+          const p1 = stroke.points[i]
+          const t = total <= 0 ? 1 : i / total
+          const edge = Math.min(t, 1 - t) * 2
+          const taperFactor = 1 - (stroke.taper ?? 0.35) * (1 - edge)
+          ctx.lineWidth = Math.max(1, stroke.size * taperFactor)
+          ctx.globalAlpha = (stroke.opacity ?? 0.7) * (stroke.flow ?? 0.6)
+          ctx.beginPath()
+          ctx.moveTo(p0.x, p0.y)
+          ctx.lineTo(p1.x, p1.y)
+          ctx.stroke()
+        }
+      } else {
+        ctx.lineJoin = 'round'
+        ctx.beginPath()
+        stroke.points.forEach((point, index) => (index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
+        ctx.stroke()
+      }
+      if (stroke.tool === 'eraser') ctx.restore()
+      ctx.globalAlpha = 1
     })
   }
 
@@ -338,16 +370,10 @@ function App() {
       setCropRect({ x: point.x, y: point.y, w: 0, h: 0 })
       return
     }
-    if (activeTool !== 'hand') {
+    if (activeTool !== 'hand' && activeTool !== 'select') {
       strokeSessionRef.current += 1
       const point = getCanvasPoint(event)
-      if (activeTool === 'eraser') {
-        const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
-        setRoomWithHistory((prevRoom) => ({
-          ...prevRoom,
-          collage: { ...prevRoom.collage, [key]: prevRoom.collage[key].filter((st) => !st.points.some((pt) => Math.hypot(pt.x - point.x, pt.y - point.y) <= Math.max(16, brushSize * 2))) },
-        }))
-      } else setCurrentStroke([point])
+      setCurrentStroke([point])
     }
   }
 
@@ -358,7 +384,7 @@ function App() {
       setCropRect({ x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) })
       return
     }
-    if (activeTool !== 'hand' && activeTool !== 'eraser' && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
+    if (activeTool !== 'hand' && activeTool !== 'select' && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   }
 
   const endStroke = (sessionId = strokeSessionRef.current) => {
@@ -367,15 +393,14 @@ function App() {
       cropStartRef.current = null
       return
     }
-    if (activeTool === 'eraser') return
-    if (activeTool === 'hand' || currentStroke.length < 2) {
+    if (activeTool === 'hand' || activeTool === 'select' || currentStroke.length < 2) {
       setCurrentStroke([])
       return
     }
 
     const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
-    const toolSize = activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : Math.max(brushSize, 6)
-    const stroke = { id: randomId(), color: brushColor, size: toolSize, points: currentStroke, tool: activeTool }
+    const toolSize = activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : activeTool === 'eraser' ? Math.max(8, brushSize * 1.6) : Math.max(brushSize, 6)
+    const stroke = { id: randomId(), color: brushColor, size: toolSize, points: currentStroke, tool: activeTool, opacity: brushOpacity, flow: brushFlow, taper: brushTaper }
     setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
@@ -415,10 +440,10 @@ function App() {
 
   useEffect(() => {
     if (stage !== 'room') return
-    const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : Math.max(brushSize, 6) } : null
+    const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : activeTool === 'eraser' ? Math.max(8, brushSize * 1.6) : Math.max(brushSize, 6), tool: activeTool, opacity: brushOpacity } : null
     drawStrokes(backCanvasRef.current, room.collage.strokesBack, drawTarget === 'back' ? preview : null)
     drawStrokes(frontCanvasRef.current, room.collage.strokesFront, drawTarget === 'front' ? preview : null)
-  }, [stage, room.collage.strokesBack, room.collage.strokesFront, currentStroke, drawTarget, brushColor, brushSize])
+  }, [stage, room.collage.strokesBack, room.collage.strokesFront, currentStroke, drawTarget, brushColor, brushSize, activeTool, brushOpacity])
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -449,14 +474,14 @@ function App() {
       }
       if (!activeField && key === 'a') {
         event.preventDefault()
-        setActiveTool((value) => (value === 'hand' ? 'pencil' : 'hand'))
+        setActiveTool((value) => (value === 'hand' ? 'select' : 'hand'))
         return
       }
       if (key === 'escape') {
         setSelectedItemId(null)
         setSelectedLayerId(null)
         setCropRect(null)
-        setActiveTool('pencil')
+        setActiveTool('select')
       }
     }
 
@@ -517,7 +542,7 @@ function App() {
       return
     }
 
-    if (draggingId && activeTool !== 'hand' && activeTool !== 'pencil' && activeTool !== 'brush' && activeTool !== 'eraser' && activeTool !== 'crop') {
+    if (draggingId) {
       interactionDirtyRef.current = true
       updateItem(draggingId, {
         x: clamp(point.x - 60, 0, WORLD_WIDTH - 120),
@@ -633,6 +658,7 @@ function App() {
             <h3>{room.name}</h3>
             <p>{room.description}</p>
             <button onClick={copyInvite}>{copied ? '¡Copiado!' : 'Copiar invitación'}</button>
+            <button onClick={() => setStage('landing')}>Salir de la sala</button>
             <hr />
 
             <h4>Capas</h4>
@@ -653,6 +679,7 @@ function App() {
               <button className={activeTool === 'brush' ? 'tool-active' : ''} onClick={() => setActiveTool('brush')}>Pincel</button>
               <button className={activeTool === 'eraser' ? 'tool-active' : ''} onClick={() => setActiveTool('eraser')}>Borrador</button>
               <button className={activeTool === 'crop' ? 'tool-active' : ''} onClick={() => setActiveTool('crop')}>Recorte</button>
+              <button className={activeTool === 'select' ? 'tool-active' : ''} onClick={() => setActiveTool('select')}>Seleccionar</button>
               <button className={activeTool === 'hand' ? 'tool-active' : ''} onClick={() => setActiveTool('hand')}>Mano (A)</button>
             </div>
             <label>
@@ -671,6 +698,13 @@ function App() {
               Tamaño
               <input type="range" min="1" max="30" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
             </label>
+            {activeTool === 'brush' && (
+              <>
+                <label>Opacidad <input type="range" min="0.1" max="1" step="0.05" value={brushOpacity} onChange={(event) => setBrushOpacity(Number(event.target.value))} /></label>
+                <label>Intensidad <input type="range" min="0.1" max="1" step="0.05" value={brushFlow} onChange={(event) => setBrushFlow(Number(event.target.value))} /></label>
+                <label>Suavidad punta <input type="range" min="0" max="1" step="0.05" value={brushTaper} onChange={(event) => setBrushTaper(Number(event.target.value))} /></label>
+              </>
+            )}
             <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button>
             <h4>Fondo de sala</h4>
             <input placeholder="URL de imagen de fondo" value={room.backgroundImageUrl || ''} onChange={(event) => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: event.target.value.trim() }), { recordHistory: false })} />
@@ -685,6 +719,7 @@ function App() {
               Limpiar todo el fondo
             </button>
             <small>Pega imágenes/GIFs con Ctrl/Cmd+V. Pan: rueda presionada o espacio+drag. Zoom: Ctrl+rueda sobre canvas.</small>
+            <small>Recorte: selecciona "Recorte" y arrastra sobre el canvas para marcar el área.</small>
             <hr />
 
             <h4>Módulos flotantes</h4>
@@ -759,8 +794,7 @@ function App() {
               onMouseDown={() => {
                 setSelectedLayerId(layer.id)
                 setSelectedItemId(null)
-                if (activeTool === 'hand') return
-                if (activeTool === 'pencil' || activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'crop') return
+                if (activeTool !== 'select') return
                 {
                   interactionStartRef.current = room
                   interactionDirtyRef.current = false
@@ -792,8 +826,7 @@ function App() {
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
-                if (activeTool === 'hand') return
-                if (activeTool === 'pencil' || activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'crop') return
+                if (activeTool !== 'select') return
                 {
                   interactionStartRef.current = room
                   interactionDirtyRef.current = false
