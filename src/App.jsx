@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+// =========================
+// Configuración base canvas
+// =========================
 const STORAGE_KEY = 'achantes-room-v2'
 const WORLD_WIDTH = 6000
 const WORLD_HEIGHT = 4000
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 3
 
+// Z-index lógico por familias
+const Z_BASE_BACKGROUND = 1
+const Z_BASE_ITEM = 2000
+
 const moduleOptions = [
-  { type: 'poster', label: 'Poster URL' },
-  { type: 'gif', label: 'GIF URL' },
   { type: 'text', label: 'Texto decorativo' },
   { type: 'postit', label: 'Post-it' },
   { type: 'player', label: 'Reproductor link' },
@@ -45,8 +50,6 @@ const normalizeGifUrl = (rawUrl) => {
 }
 
 const defaultItemsByType = {
-  poster: { content: 'https://images.unsplash.com/photo-1516280440614-37939bbacd81?w=600' },
-  gif: { content: 'https://media.giphy.com/media/TilmLMmWrRYYHjLfub/giphy.gif', w: 240, h: 160 },
   text: { content: 'ACHANTE VIBES ✦' },
   postit: { content: 'No olvides invitar al combo 🔥', w: 160, h: 160 },
   player: { content: 'https://open.spotify.com/' },
@@ -58,15 +61,29 @@ function App() {
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
   const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
+
+  // =========================
+  // UI / selección
+  // =========================
   const [copied, setCopied] = useState(false)
   const [selectedLayerId, setSelectedLayerId] = useState(null)
   const [selectedItemId, setSelectedItemId] = useState(null)
   const [pastingUrl, setPastingUrl] = useState('')
+  const [menuCollapsed, setMenuCollapsed] = useState(false)
+  const [showLayerLabels, setShowLayerLabels] = useState(false)
+
+  // =========================
+  // Dibujo
+  // =========================
   const [drawMode, setDrawMode] = useState(false)
   const [drawTarget, setDrawTarget] = useState('front')
   const [brushColor, setBrushColor] = useState('#f5e663')
   const [brushSize, setBrushSize] = useState(5)
   const [currentStroke, setCurrentStroke] = useState([])
+
+  // =========================
+  // Interacción / vista
+  // =========================
   const [draggingId, setDraggingId] = useState(null)
   const [dragLayerId, setDragLayerId] = useState(null)
   const [resizeLayerId, setResizeLayerId] = useState(null)
@@ -83,11 +100,34 @@ function App() {
   const panDragRef = useRef(null)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
+
+  // Observa cambios de tamaño del viewport de trabajo
   useEffect(() => {
     if (!mainRef.current || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(([entry]) => setViewport({ width: entry.contentRect.width, height: entry.contentRect.height }))
     observer.observe(mainRef.current)
     return () => observer.disconnect()
+  }, [])
+
+  // Bloquear zoom del navegador (Ctrl + rueda) y dirigirlo al canvas
+  useEffect(() => {
+    const host = mainRef.current
+    if (!host) return
+    const onNativeWheel = (event) => {
+      if (!event.ctrlKey) return
+      event.preventDefault()
+      const rect = host.getBoundingClientRect()
+      const cursorX = event.clientX - rect.left
+      const cursorY = event.clientY - rect.top
+      setView((prev) => {
+        const nextZoom = clamp(prev.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM)
+        const worldX = (cursorX - prev.panX) / prev.zoom
+        const worldY = (cursorY - prev.panY) / prev.zoom
+        return { zoom: nextZoom, panX: cursorX - worldX * nextZoom, panY: cursorY - worldY * nextZoom }
+      })
+    }
+    host.addEventListener('wheel', onNativeWheel, { passive: false })
+    return () => host.removeEventListener('wheel', onNativeWheel)
   }, [])
 
   const roomGradient = useMemo(() => {
@@ -105,25 +145,80 @@ function App() {
   }, [])
   useEffect(() => { if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room)) }, [room, stage])
 
+  useEffect(() => {
+    if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
+  }, [room, stage])
+
+  // Transformación consistente de pointer -> coordenadas internas del canvas
   const getCanvasPoint = (event) => {
     const rect = mainRef.current.getBoundingClientRect()
     return { x: (event.clientX - rect.left - view.panX) / view.zoom, y: (event.clientY - rect.top - view.panY) / view.zoom }
   }
+
+  const updateItem = (id, patch) => setRoom((p) => ({ ...p, items: p.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }))
+  const updateLayer = (id, patch) => setRoom((p) => ({ ...p, collage: { ...p.collage, layers: p.collage.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) } }))
+
+  const getMaxZ = () => {
+    const layerMax = room.collage.layers.reduce((max, l) => Math.max(max, l.z || Z_BASE_BACKGROUND), Z_BASE_BACKGROUND)
+    const itemMax = room.items.reduce((max, it) => Math.max(max, it.z || Z_BASE_ITEM), Z_BASE_ITEM)
+    return Math.max(layerMax, itemMax)
+  }
   const updateItem = (id, patch) => setRoom((p) => ({ ...p, items: p.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }))
   const updateLayer = (id, patch) => setRoom((p) => ({ ...p, collage: { ...p.collage, layers: p.collage.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) } }))
   const removeSelectedEntity = () => {
-    if (selectedItemId) return setRoom((p) => ({ ...p, items: p.items.filter((it) => it.id !== selectedItemId) })), setSelectedItemId(null)
-    if (selectedLayerId) setRoom((p) => ({ ...p, collage: { ...p.collage, layers: p.collage.layers.filter((l) => l.id !== selectedLayerId) } })), setSelectedLayerId(null)
+    if (selectedItemId) {
+      setRoom((p) => ({ ...p, items: p.items.filter((it) => it.id !== selectedItemId) }))
+      setSelectedItemId(null)
+      return
+    }
+    if (selectedLayerId) {
+      setRoom((p) => ({ ...p, collage: { ...p.collage, layers: p.collage.layers.filter((l) => l.id !== selectedLayerId) } }))
+      setSelectedLayerId(null)
+    }
+  }
+
+  // Controles de orden de capas para elemento seleccionado
+  const moveSelectedZ = (mode) => {
+    const selectedType = selectedItemId ? 'item' : selectedLayerId ? 'layer' : null
+    const selectedId = selectedItemId || selectedLayerId
+    if (!selectedType || !selectedId) return
+
+    const maxZ = getMaxZ()
+    const minZ = selectedType === 'item' ? Z_BASE_ITEM : Z_BASE_BACKGROUND
+
+    if (selectedType === 'item') {
+      const selected = room.items.find((it) => it.id === selectedId)
+      if (!selected) return
+      const current = selected.z || Z_BASE_ITEM
+      const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? current - 1 : mode === 'forward' ? current + 1 : current - 1
+      updateItem(selectedId, { z: Math.max(minZ, target) })
+      return
+    }
+
+    const selected = room.collage.layers.find((l) => l.id === selectedId)
+    if (!selected) return
+    const current = selected.z || Z_BASE_BACKGROUND
+    const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
+    updateLayer(selectedId, { z: Math.max(minZ, target) })
   }
 
   const addItem = (type) => {
-    const nextItem = { ...{ id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '', editUrl: '' }, ...defaultItemsByType[type] }
-    if (type === 'gif') nextItem.editUrl = nextItem.content
+    const nextItem = {
+      ...{ id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '', editUrl: '', z: getMaxZ() + 1 },
+      ...defaultItemsByType[type],
+    }
     setRoom((p) => ({ ...p, items: [...p.items, nextItem] }))
     setSelectedItemId(nextItem.id)
     setSelectedLayerId(null)
   }
   const addBackgroundImage = (src, x = 50, y = 60) => setRoom((p) => ({ ...p, collage: { ...p.collage, layers: [...p.collage.layers, { id: randomId(), src, x, y, w: 240, h: 180, z: p.collage.layers.length + 1 }] } }))
+
+  const addBackgroundImage = (src, x = 50, y = 60) => {
+    setRoom((p) => ({
+      ...p,
+      collage: { ...p.collage, layers: [...p.collage.layers, { id: randomId(), src, x, y, w: 240, h: 180, z: getMaxZ() + 1 }] },
+    }))
+  }
 
   const drawStrokes = (canvas, strokes, previewStroke) => {
     if (!canvas) return
@@ -142,6 +237,7 @@ function App() {
       ctx.stroke()
     })
   }
+
   const startStroke = (event) => drawMode && setCurrentStroke([getCanvasPoint(event)])
   const moveStroke = (event) => drawMode && currentStroke.length > 0 && setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   const endStroke = () => {
@@ -173,7 +269,10 @@ function App() {
     const onKeyUp = (event) => event.key === ' ' && setSpacePressed(false)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
-    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp) }
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
   }, [selectedItemId, selectedLayerId])
 
   useEffect(() => {
@@ -182,21 +281,30 @@ function App() {
       const clipboardItems = event.clipboardData?.items
       if (!clipboardItems) return
       for (const item of clipboardItems) {
-        if (item.type.startsWith('image/')) { const file = item.getAsFile(); if (!file) continue; const reader = new FileReader(); reader.onload = () => addBackgroundImage(reader.result); reader.readAsDataURL(file); continue }
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (!file) continue
+          const reader = new FileReader()
+          reader.onload = () => addBackgroundImage(reader.result)
+          reader.readAsDataURL(file)
+          continue
+        }
         if (item.type === 'text/plain') item.getAsString((txt) => /https?:\/\//.test(txt.trim()) && addBackgroundImage(txt.trim()))
       }
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  }, [stage])
+  }, [stage, room])
 
   const onMainMove = (event) => {
     const point = getCanvasPoint(event)
+
     if (panDragRef.current) {
       const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
       setView((p) => ({ ...p, panX: panStartX + (event.clientX - pointerStartX), panY: panStartY + (event.clientY - pointerStartY) }))
       return
     }
+
     if (draggingId && !drawMode) updateItem(draggingId, { x: clamp(point.x - 60, 0, WORLD_WIDTH - 120), y: clamp(point.y - 24, 0, WORLD_HEIGHT - 60) })
     if (dragLayerId) {
       const layer = room.collage.layers.find((entry) => entry.id === dragLayerId)
@@ -212,9 +320,29 @@ function App() {
     }
   }
 
-  const clearDraggingState = () => { setDraggingId(null); setDragLayerId(null); setResizeLayerId(null); setResizeItemId(null); setIsPanning(false); panDragRef.current = null; endStroke() }
-  const createRoom = (event) => { event.preventDefault(); setRoom((prev) => ({ ...prev, ...form })); setStage('room') }
-  const copyInvite = async () => { const invite = `${window.location.origin}/room/${room.name.toLowerCase().replaceAll(' ', '-')}`; await navigator.clipboard.writeText(invite); setCopied(true); setTimeout(() => setCopied(false), 1500) }
+  const clearDraggingState = () => {
+    setDraggingId(null)
+    setDragLayerId(null)
+    setResizeLayerId(null)
+    setResizeItemId(null)
+    setIsPanning(false)
+    panDragRef.current = null
+    endStroke()
+  }
+
+  const createRoom = (event) => {
+    event.preventDefault()
+    setRoom((prev) => ({ ...prev, ...form }))
+    setStage('room')
+  }
+
+  const copyInvite = async () => {
+    const invite = `${window.location.origin}/room/${room.name.toLowerCase().replaceAll(' ', '-')}`
+    await navigator.clipboard.writeText(invite)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
   const applyGifUrl = (itemId) => {
     const item = room.items.find((entry) => entry.id === itemId)
     if (!item) return
@@ -226,17 +354,29 @@ function App() {
   if (stage === 'landing') return <div className="min-h-screen landing"><header><h1>Achantes</h1><p>Arma tu achante</p></header><form className="card" onSubmit={createRoom}><h2>Crea tu sala</h2><input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /><textarea placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /><label>Color de pared <input type="color" value={form.wallColor} onChange={(e) => setForm({ ...form, wallColor: e.target.value })} /></label><select value={form.style} onChange={(e) => setForm({ ...form, style: e.target.value })}><option value="grunge-neon">Grunge neón</option><option value="punk-zine">Punk zine</option><option value="retro-pop">Retro pop</option></select><button type="submit">Entrar a la sala</button></form></div>
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`}>
       <aside>
-        <h3>{room.name}</h3><p>{room.description}</p><button onClick={copyInvite}>{copied ? '¡Copiado!' : 'Copiar invitación'}</button><hr />
-        <h4>Collage fondo</h4><button onClick={() => setDrawMode((value) => !value)}>{drawMode ? 'Salir dibujo' : 'Dibujar'}</button>
-        <label>Capa dibujo<select value={drawTarget} onChange={(e) => setDrawTarget(e.target.value)}><option value="back">Detrás de imágenes</option><option value="front">Encima de imágenes</option></select></label>
-        <label>Color <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} /></label>
-        <label>Tamaño <input type="range" min="1" max="30" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} /></label>
-        <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button><input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(e) => setPastingUrl(e.target.value)} />
-        <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>Agregar al fondo</button>{selectedLayerId && <button onClick={removeSelectedEntity}>Eliminar capa seleccionada</button>}
-        <button onClick={() => setRoom((prev) => ({ ...prev, collage: { ...prev.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>Limpiar todo el fondo</button><small>Puedes pegar imágenes o links (Ctrl/Cmd + V). Mantén espacio y arrastra o usa rueda para panear.</small>
-        <hr /><h4>Módulos flotantes</h4>{moduleOptions.map((module) => <button key={module.type} onClick={() => addItem(module.type)}>{module.label}</button>)}
+        <button className="menu-toggle" onClick={() => setMenuCollapsed((v) => !v)}>{menuCollapsed ? '▶ Abrir menú' : '◀ Ocultar menú'}</button>
+        {!menuCollapsed && <>
+          <h3>{room.name}</h3><p>{room.description}</p><button onClick={copyInvite}>{copied ? '¡Copiado!' : 'Copiar invitación'}</button><hr />
+          <h4>Capas</h4>
+          <button onClick={() => moveSelectedZ('forward')}>Traer adelante</button>
+          <button onClick={() => moveSelectedZ('backward')}>Enviar atrás</button>
+          <button onClick={() => moveSelectedZ('front')}>Traer al frente</button>
+          <button onClick={() => moveSelectedZ('back')}>Enviar al fondo</button>
+          <button onClick={() => setShowLayerLabels((v) => !v)}>{showLayerLabels ? 'Ocultar IDs capa' : 'Mostrar IDs capa'}</button>
+          <small>Selecciona primero un objeto/capa para ordenarlo.</small>
+          <hr />
+          <h4>Collage fondo</h4><button onClick={() => setDrawMode((value) => !value)}>{drawMode ? 'Salir dibujo' : 'Dibujar'}</button>
+          <label>Capa dibujo<select value={drawTarget} onChange={(e) => setDrawTarget(e.target.value)}><option value="back">Detrás de imágenes</option><option value="front">Encima de imágenes</option></select></label>
+          <label>Color <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} /></label>
+          <label>Tamaño <input type="range" min="1" max="30" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} /></label>
+          <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button><input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(e) => setPastingUrl(e.target.value)} />
+          <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>Agregar al fondo</button>{selectedLayerId && <button onClick={removeSelectedEntity}>Eliminar capa seleccionada</button>}
+          <button onClick={() => setRoom((prev) => ({ ...prev, collage: { ...prev.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>Limpiar todo el fondo</button>
+          <small>Pega imágenes/GIFs con Ctrl/Cmd+V. Pan: rueda presionada o espacio+drag. Zoom: Ctrl+rueda sobre canvas.</small>
+          <hr /><h4>Módulos flotantes</h4>{moduleOptions.map((module) => <button key={module.type} onClick={() => addItem(module.type)}>{module.label}</button>)}
+        </>}
       </aside>
       <main
         ref={mainRef}
@@ -252,23 +392,14 @@ function App() {
           setIsPanning(true)
           panDragRef.current = { pointerStartX: event.clientX, pointerStartY: event.clientY, panStartX: view.panX, panStartY: view.panY }
         }}
-        onWheel={(event) => {
-          if (!event.ctrlKey) return
-          event.preventDefault()
-          const nextZoom = clamp(view.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM)
-          const rect = mainRef.current.getBoundingClientRect()
-          const cursorX = event.clientX - rect.left
-          const cursorY = event.clientY - rect.top
-          const worldX = (cursorX - view.panX) / view.zoom
-          const worldY = (cursorY - view.panY) / view.zoom
-          setView({ zoom: nextZoom, panX: cursorX - worldX * nextZoom, panY: cursorY - worldY * nextZoom })
-        }}>
+      >
         <div className="viewport-tools"><button onClick={() => setView((p) => ({ ...p, zoom: clamp(p.zoom * 1.1, MIN_ZOOM, MAX_ZOOM) }))}>+</button><button onClick={() => setView((p) => ({ ...p, zoom: clamp(p.zoom * 0.9, MIN_ZOOM, MAX_ZOOM) }))}>-</button><button onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>Restablecer vista</button><button onClick={() => { const fitZoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM); setView({ zoom: fitZoom, panX: (viewport.width - WORLD_WIDTH * fitZoom) / 2, panY: (viewport.height - WORLD_HEIGHT * fitZoom) / 2 }) }}>Ajustar a pantalla</button></div>
         <div className={`design-surface ${isPanning ? 'panning' : ''}`} style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}>
           <canvas ref={backCanvasRef} className="bg-canvas" />
-          {room.collage.layers.sort((a, b) => a.z - b.z).map((layer) => <div key={layer.id} className={`bg-layer ${selectedLayerId === layer.id ? 'selected' : ''}`} style={{ left: layer.x, top: layer.y, width: layer.w, height: layer.h, zIndex: layer.z }} onMouseDown={() => { setSelectedLayerId(layer.id); setSelectedItemId(null); if (!drawMode) setDragLayerId(layer.id) }}><img src={layer.src} alt="layer" draggable={false} /><button className="resize-handle" onMouseDown={(e) => { e.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" /></div>)}
+          {room.collage.layers.map((layer) => <div key={layer.id} className={`bg-layer ${selectedLayerId === layer.id ? 'selected' : ''}`} style={{ left: layer.x, top: layer.y, width: layer.w, height: layer.h, zIndex: layer.z || Z_BASE_BACKGROUND }} onMouseDown={() => { setSelectedLayerId(layer.id); setSelectedItemId(null); if (!drawMode) setDragLayerId(layer.id) }}><img src={layer.src} alt="layer" draggable={false} />{showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}<button className="resize-handle" onMouseDown={(e) => { e.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" /></div>)}
           <canvas ref={frontCanvasRef} className={`bg-canvas front ${drawMode ? 'drawing' : ''}`} onMouseDown={startStroke} onMouseMove={moveStroke} onMouseUp={endStroke} onMouseLeave={endStroke} />
-          {room.items.map((item) => <div key={item.id} className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h }} onMouseDown={() => { setSelectedItemId(item.id); setSelectedLayerId(null); if (!drawMode) setDraggingId(item.id) }}>{(item.type === 'poster' || item.type === 'gif') && <img src={item.content} alt={item.type} draggable={false} onError={() => item.type === 'gif' && updateItem(item.id, { loadError: 'No se pudo cargar este GIF. Usa enlace directo .gif o de Giphy/Tenor.' })} onLoad={() => item.type === 'gif' && item.loadError && updateItem(item.id, { loadError: '' })} />}
+          {room.items.map((item) => <div key={item.id} className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h, zIndex: item.z || Z_BASE_ITEM }} onMouseDown={() => { setSelectedItemId(item.id); setSelectedLayerId(null); if (!drawMode) setDraggingId(item.id) }}>{item.type === 'gif' && <img src={item.content} alt={item.type} draggable={false} onError={() => updateItem(item.id, { loadError: 'No se pudo cargar este GIF.' })} onLoad={() => item.loadError && updateItem(item.id, { loadError: '' })} />}
+            {showLayerLabels && <span className="layer-badge">Z:{item.z || Z_BASE_ITEM}</span>}
             {item.type === 'gif' && <div className="gif-controls" onMouseDown={(e) => e.stopPropagation()}><input value={item.editUrl || ''} onChange={(e) => updateItem(item.id, { editUrl: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && applyGifUrl(item.id)} placeholder="URL GIF" /><button type="button" onClick={() => applyGifUrl(item.id)}>Aplicar</button></div>}
             {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
             {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(e) => updateItem(item.id, { content: e.target.textContent })}>{item.content}</h5>}
