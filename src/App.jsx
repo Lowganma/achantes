@@ -96,6 +96,8 @@ function App() {
   const panDragRef = useRef(null)
   const undoStackRef = useRef([])
   const redoStackRef = useRef([])
+  const skipHistoryRef = useRef(false)
+  const lastPointerRef = useRef({ x: 60, y: 60 })
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -156,6 +158,16 @@ function App() {
     if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
   }, [room, stage])
 
+  const setRoomWithHistory = (updater, { recordHistory = true } = {}) => {
+    setRoom((prevRoom) => {
+      const nextRoom = typeof updater === 'function' ? updater(prevRoom) : updater
+      if (!recordHistory || skipHistoryRef.current || nextRoom === prevRoom) return nextRoom
+      undoStackRef.current.push(prevRoom)
+      redoStackRef.current = []
+      return nextRoom
+    })
+  }
+
   const getCanvasPoint = (event) => {
     const rect = mainRef.current.getBoundingClientRect()
     return {
@@ -171,14 +183,14 @@ function App() {
   }
 
   const updateItem = (id, patch) => {
-    setRoom((prevRoom) => ({
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       items: prevRoom.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     }))
   }
 
   const updateLayer = (id, patch) => {
-    setRoom((prevRoom) => ({
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
@@ -189,13 +201,13 @@ function App() {
 
   const removeSelectedEntity = () => {
     if (selectedItemId) {
-      setRoom((prevRoom) => ({ ...prevRoom, items: prevRoom.items.filter((item) => item.id !== selectedItemId) }))
+      setRoomWithHistory((prevRoom) => ({ ...prevRoom, items: prevRoom.items.filter((item) => item.id !== selectedItemId) }))
       setSelectedItemId(null)
       return
     }
 
     if (selectedLayerId) {
-      setRoom((prevRoom) => ({
+      setRoomWithHistory((prevRoom) => ({
         ...prevRoom,
         collage: { ...prevRoom.collage, layers: prevRoom.collage.layers.filter((layer) => layer.id !== selectedLayerId) },
       }))
@@ -241,13 +253,13 @@ function App() {
       ...defaultItemsByType[type],
     }
 
-    setRoom((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
+    setRoomWithHistory((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
     setSelectedItemId(nextItem.id)
     setSelectedLayerId(null)
   }
 
   const addBackgroundImage = (src, x = 50, y = 60) => {
-    setRoom((prevRoom) => ({
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
@@ -294,7 +306,7 @@ function App() {
 
     const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
     const stroke = { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }
-    setRoom((prevRoom) => ({
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
@@ -307,31 +319,25 @@ function App() {
   }
 
   const undoStroke = () => {
-    const lastEntry = undoStackRef.current.pop()
-    if (!lastEntry) return
-    const { target, stroke } = lastEntry
-    redoStackRef.current.push(lastEntry)
-    setRoom((prevRoom) => ({
-      ...prevRoom,
-      collage: {
-        ...prevRoom.collage,
-        [target]: prevRoom.collage[target].filter((item) => item.id !== stroke.id),
-      },
-    }))
+    const previousRoom = undoStackRef.current.pop()
+    if (!previousRoom) return
+    skipHistoryRef.current = true
+    setRoom((currentRoom) => {
+      redoStackRef.current.push(currentRoom)
+      return previousRoom
+    })
+    skipHistoryRef.current = false
   }
 
   const redoStroke = () => {
-    const nextEntry = redoStackRef.current.pop()
-    if (!nextEntry) return
-    const { target, stroke } = nextEntry
-    undoStackRef.current.push(nextEntry)
-    setRoom((prevRoom) => ({
-      ...prevRoom,
-      collage: {
-        ...prevRoom.collage,
-        [target]: [...prevRoom.collage[target], stroke],
-      },
-    }))
+    const nextRoom = redoStackRef.current.pop()
+    if (!nextRoom) return
+    skipHistoryRef.current = true
+    setRoom((currentRoom) => {
+      undoStackRef.current.push(currentRoom)
+      return nextRoom
+    })
+    skipHistoryRef.current = false
   }
 
   useEffect(() => {
@@ -402,7 +408,7 @@ function App() {
           const file = item.getAsFile()
           if (!file) continue
           const reader = new FileReader()
-          reader.onload = () => addBackgroundImage(reader.result)
+          reader.onload = () => addBackgroundImage(reader.result, lastPointerRef.current.x, lastPointerRef.current.y)
           reader.readAsDataURL(file)
           continue
         }
@@ -410,7 +416,7 @@ function App() {
         if (item.type === 'text/plain') {
           item.getAsString((text) => {
             const cleanText = text.trim()
-            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText)
+            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText, lastPointerRef.current.x, lastPointerRef.current.y)
           })
         }
       }
@@ -422,6 +428,7 @@ function App() {
 
   const onMainMove = (event) => {
     const point = getCanvasPoint(event)
+    lastPointerRef.current = { x: point.x, y: point.y }
 
     if (panDragRef.current) {
       const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
@@ -583,7 +590,7 @@ function App() {
               Agregar al fondo
             </button>
             {selectedLayerId && <button onClick={removeSelectedEntity}>Eliminar capa seleccionada</button>}
-            <button onClick={() => setRoom((prevRoom) => ({ ...prevRoom, collage: { ...prevRoom.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>
+            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, collage: { ...prevRoom.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>
               Limpiar todo el fondo
             </button>
             <small>Pega imágenes/GIFs con Ctrl/Cmd+V. Pan: rueda presionada o espacio+drag. Zoom: Ctrl+rueda sobre canvas.</small>
