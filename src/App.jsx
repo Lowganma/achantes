@@ -41,6 +41,17 @@ const defaultRoom = {
   collage: { layers: [], strokesBack: [], strokesFront: [] },
 }
 
+const normalizeRoomState = (value) => ({
+  ...defaultRoom,
+  ...(value || {}),
+  collage: {
+    layers: [],
+    strokesBack: [],
+    strokesFront: [],
+    ...((value && value.collage) || {}),
+  },
+})
+
 const normalizeGifUrl = (rawUrl = '') => {
   const value = rawUrl.trim()
   if (!value) return ''
@@ -94,6 +105,13 @@ function App() {
   const frontCanvasRef = useRef(null)
   const drawTargetRef = useRef(drawTarget)
   const panDragRef = useRef(null)
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
+  const skipHistoryRef = useRef(false)
+  const lastPointerRef = useRef({ x: 60, y: 60 })
+  const interactionStartRef = useRef(null)
+  const interactionDirtyRef = useRef(false)
+  const strokeSessionRef = useRef(0)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -154,6 +172,16 @@ function App() {
     if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
   }, [room, stage])
 
+  const setRoomWithHistory = (updater, { recordHistory = true } = {}) => {
+    setRoom((prevRoom) => {
+      const nextRoom = normalizeRoomState(typeof updater === 'function' ? updater(prevRoom) : updater)
+      if (!recordHistory || skipHistoryRef.current || nextRoom === prevRoom) return nextRoom
+      undoStackRef.current.push(normalizeRoomState(prevRoom))
+      redoStackRef.current = []
+      return nextRoom
+    })
+  }
+
   const getCanvasPoint = (event) => {
     const rect = mainRef.current.getBoundingClientRect()
     return {
@@ -168,32 +196,32 @@ function App() {
     return clamp(Math.max(layerMax, itemMax), Z_BASE_BACKGROUND, MAX_LAYER_Z)
   }
 
-  const updateItem = (id, patch) => {
-    setRoom((prevRoom) => ({
+  const updateItem = (id, patch, options) => {
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       items: prevRoom.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-    }))
+    }), options)
   }
 
-  const updateLayer = (id, patch) => {
-    setRoom((prevRoom) => ({
+  const updateLayer = (id, patch, options) => {
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
         layers: prevRoom.collage.layers.map((layer) => (layer.id === id ? { ...layer, ...patch } : layer)),
       },
-    }))
+    }), options)
   }
 
   const removeSelectedEntity = () => {
     if (selectedItemId) {
-      setRoom((prevRoom) => ({ ...prevRoom, items: prevRoom.items.filter((item) => item.id !== selectedItemId) }))
+      setRoomWithHistory((prevRoom) => ({ ...prevRoom, items: prevRoom.items.filter((item) => item.id !== selectedItemId) }))
       setSelectedItemId(null)
       return
     }
 
     if (selectedLayerId) {
-      setRoom((prevRoom) => ({
+      setRoomWithHistory((prevRoom) => ({
         ...prevRoom,
         collage: { ...prevRoom.collage, layers: prevRoom.collage.layers.filter((layer) => layer.id !== selectedLayerId) },
       }))
@@ -239,13 +267,13 @@ function App() {
       ...defaultItemsByType[type],
     }
 
-    setRoom((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
+    setRoomWithHistory((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
     setSelectedItemId(nextItem.id)
     setSelectedLayerId(null)
   }
 
   const addBackgroundImage = (src, x = 50, y = 60) => {
-    setRoom((prevRoom) => ({
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
@@ -276,36 +304,59 @@ function App() {
   }
 
   const startStroke = (event) => {
-    if (drawMode && !handMode) setCurrentStroke([getCanvasPoint(event)])
+    if (event.button !== 0) return
+    if (drawMode && !handMode) {
+      strokeSessionRef.current += 1
+      setCurrentStroke([getCanvasPoint(event)])
+    }
   }
 
   const moveStroke = (event) => {
     if (drawMode && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   }
 
-  const endStroke = () => {
+  const endStroke = (sessionId = strokeSessionRef.current) => {
+    if (sessionId !== strokeSessionRef.current) return
     if (!drawMode || currentStroke.length < 2) {
       setCurrentStroke([])
       return
     }
 
     const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
-    setRoom((prevRoom) => ({
+    const stroke = { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }
+    setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
-        [key]: [...prevRoom.collage[key], { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }],
+        [key]: [...prevRoom.collage[key], stroke],
       },
     }))
     setCurrentStroke([])
+    strokeSessionRef.current += 1
   }
 
-  const undoStroke = (target = drawTargetRef.current) => {
-    const key = target === 'back' ? 'strokesBack' : 'strokesFront'
-    setRoom((prevRoom) => ({
-      ...prevRoom,
-      collage: { ...prevRoom.collage, [key]: prevRoom.collage[key].slice(0, -1) },
-    }))
+  const undoStroke = () => {
+    const previousRoom = undoStackRef.current.pop()
+    if (!previousRoom) return
+    skipHistoryRef.current = true
+    setRoom((currentRoom) => {
+      redoStackRef.current.push(normalizeRoomState(currentRoom))
+      return normalizeRoomState(previousRoom)
+    })
+    skipHistoryRef.current = false
+    setCurrentStroke([])
+  }
+
+  const redoStroke = () => {
+    const nextRoom = redoStackRef.current.pop()
+    if (!nextRoom) return
+    skipHistoryRef.current = true
+    setRoom((currentRoom) => {
+      undoStackRef.current.push(normalizeRoomState(currentRoom))
+      return normalizeRoomState(nextRoom)
+    })
+    skipHistoryRef.current = false
+    setCurrentStroke([])
   }
 
   useEffect(() => {
@@ -320,8 +371,16 @@ function App() {
       const key = event.key.toLowerCase()
       const activeField = isFormField(document.activeElement)
       if ((event.ctrlKey || event.metaKey) && key === 'z') {
+        if (event.repeat) return
         event.preventDefault()
-        undoStroke()
+        if (event.shiftKey) redoStroke()
+        else undoStroke()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+        if (event.repeat) return
+        event.preventDefault()
+        redoStroke()
         return
       }
       if (!activeField && (key === 'delete' || key === 'backspace')) {
@@ -370,7 +429,7 @@ function App() {
           const file = item.getAsFile()
           if (!file) continue
           const reader = new FileReader()
-          reader.onload = () => addBackgroundImage(reader.result)
+          reader.onload = () => addBackgroundImage(reader.result, lastPointerRef.current.x, lastPointerRef.current.y)
           reader.readAsDataURL(file)
           continue
         }
@@ -378,7 +437,7 @@ function App() {
         if (item.type === 'text/plain') {
           item.getAsString((text) => {
             const cleanText = text.trim()
-            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText)
+            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText, lastPointerRef.current.x, lastPointerRef.current.y)
           })
         }
       }
@@ -390,6 +449,7 @@ function App() {
 
   const onMainMove = (event) => {
     const point = getCanvasPoint(event)
+    lastPointerRef.current = { x: point.x, y: point.y }
 
     if (panDragRef.current) {
       const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
@@ -404,51 +464,60 @@ function App() {
     }
 
     if (draggingId && !drawMode) {
+      interactionDirtyRef.current = true
       updateItem(draggingId, {
         x: clamp(point.x - 60, 0, WORLD_WIDTH - 120),
         y: clamp(point.y - 24, 0, WORLD_HEIGHT - 60),
-      })
+      }, { recordHistory: false })
     }
 
     if (dragLayerId) {
       const layer = room.collage.layers.find((entry) => entry.id === dragLayerId)
       if (layer) {
+        interactionDirtyRef.current = true
         updateLayer(dragLayerId, {
           x: clamp(point.x - layer.w / 2, 0, WORLD_WIDTH - layer.w),
           y: clamp(point.y - layer.h / 2, 0, WORLD_HEIGHT - layer.h),
-        })
+        }, { recordHistory: false })
       }
     }
 
     if (resizeItemId) {
       const item = room.items.find((entry) => entry.id === resizeItemId)
       if (item) {
+        interactionDirtyRef.current = true
         updateItem(resizeItemId, {
           w: clamp(point.x - item.x, 80, WORLD_WIDTH - item.x),
           h: clamp(point.y - item.y, 80, WORLD_HEIGHT - item.y),
-        })
+        }, { recordHistory: false })
       }
     }
 
     if (resizeLayerId) {
       const layer = room.collage.layers.find((entry) => entry.id === resizeLayerId)
       if (layer) {
+        interactionDirtyRef.current = true
         updateLayer(resizeLayerId, {
           w: clamp(point.x - layer.x, 60, WORLD_WIDTH - layer.x),
           h: clamp(point.y - layer.y, 60, WORLD_HEIGHT - layer.y),
-        })
+        }, { recordHistory: false })
       }
     }
   }
 
   const clearDraggingState = () => {
+    if (interactionStartRef.current && interactionDirtyRef.current) {
+      undoStackRef.current.push(interactionStartRef.current)
+      redoStackRef.current = []
+    }
+    interactionStartRef.current = null
+    interactionDirtyRef.current = false
     setDraggingId(null)
     setDragLayerId(null)
     setResizeLayerId(null)
     setResizeItemId(null)
     setIsPanning(false)
     panDragRef.current = null
-    endStroke()
   }
 
   const createRoom = (event) => {
@@ -551,7 +620,7 @@ function App() {
               Agregar al fondo
             </button>
             {selectedLayerId && <button onClick={removeSelectedEntity}>Eliminar capa seleccionada</button>}
-            <button onClick={() => setRoom((prevRoom) => ({ ...prevRoom, collage: { ...prevRoom.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>
+            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, collage: { ...prevRoom.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>
               Limpiar todo el fondo
             </button>
             <small>Pega imágenes/GIFs con Ctrl/Cmd+V. Pan: rueda presionada o espacio+drag. Zoom: Ctrl+rueda sobre canvas.</small>
@@ -572,7 +641,6 @@ function App() {
         onMouseMove={onMainMove}
         onMouseUp={clearDraggingState}
         onMouseLeave={clearDraggingState}
-        onWheelCapture={(event) => { if (event.ctrlKey) event.preventDefault() }}
         onMouseDown={(event) => {
           const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
           if (!shouldPan) return
@@ -612,12 +680,16 @@ function App() {
               onMouseDown={() => {
                 setSelectedLayerId(layer.id)
                 setSelectedItemId(null)
-                if (!drawMode && !handMode) setDragLayerId(layer.id)
+                if (!drawMode && !handMode) {
+                  interactionStartRef.current = room
+                  interactionDirtyRef.current = false
+                  setDragLayerId(layer.id)
+                }
               }}
             >
               <img src={layer.src} alt="layer" draggable={false} />
               {showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" />
+              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); interactionStartRef.current = room; interactionDirtyRef.current = false; setResizeLayerId(layer.id) }} aria-label="resize" />
             </div>
           ))}
 
@@ -626,8 +698,8 @@ function App() {
             className={`bg-canvas front ${drawMode && !handMode ? 'drawing' : ''}`}
             onMouseDown={startStroke}
             onMouseMove={moveStroke}
-            onMouseUp={endStroke}
-            onMouseLeave={endStroke}
+            onMouseUp={() => endStroke(strokeSessionRef.current)}
+            onMouseLeave={() => endStroke(strokeSessionRef.current)}
           />
 
           {room.items.map((item) => (
@@ -638,7 +710,11 @@ function App() {
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
-                if (!drawMode && !handMode) setDraggingId(item.id)
+                if (!drawMode && !handMode) {
+                  interactionStartRef.current = room
+                  interactionDirtyRef.current = false
+                  setDraggingId(item.id)
+                }
               }}
             >
               {item.type === 'gif' && item.content && (
@@ -673,7 +749,7 @@ function App() {
               {item.type === 'dice' && <button onClick={() => updateItem(item.id, { content: `🎲 ${Math.floor(Math.random() * 6) + 1}` })}>{item.content}</button>}
               {item.type === 'signwall' && <textarea value={item.content} onChange={(event) => updateItem(item.id, { content: event.target.value })} />}
 
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeItemId(item.id) }} aria-label="resize" />
+              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); interactionStartRef.current = room; interactionDirtyRef.current = false; setResizeItemId(item.id) }} aria-label="resize" />
             </div>
           ))}
         </div>
