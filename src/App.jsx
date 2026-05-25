@@ -572,7 +572,6 @@ function App() {
         onMouseMove={onMainMove}
         onMouseUp={clearDraggingState}
         onMouseLeave={clearDraggingState}
-        onWheelCapture={(event) => { if (event.ctrlKey) event.preventDefault() }}
         onMouseDown={(event) => {
           const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
           if (!shouldPan) return
