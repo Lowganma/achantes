@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCanvasViewport, clamp } from './hooks/useCanvasViewport'
+import { createModuleItem, moduleOptions } from './models/modules'
 
 // =========================
 // Configuración base canvas
@@ -20,17 +22,7 @@ const Z_BASE_BACKGROUND = 1
 const Z_BASE_ITEM = 2
 const MAX_LAYER_Z = 50
 
-const moduleOptions = [
-  { type: 'text', label: 'Texto decorativo' },
-  { type: 'postit', label: 'Post-it' },
-  { type: 'player', label: 'Reproductor link' },
-  { type: 'dice', label: 'Dado simple' },
-  { type: 'signwall', label: 'Muro firmas' },
-  { type: 'gif', label: 'GIF URL' },
-]
-
 const randomId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
 
 const isFormField = (element) => {
@@ -109,15 +101,6 @@ const normalizeGifUrl = (rawUrl = '') => {
   return value
 }
 
-const defaultItemsByType = {
-  text: { content: 'ACHANTE VIBES ✦' },
-  postit: { content: 'No olvides invitar al combo 🔥', w: 160, h: 160 },
-  player: { content: 'https://open.spotify.com/' },
-  dice: { content: '🎲 1' },
-  signwall: { content: 'Firma aquí:\n- @pana1: brutal\n- @pana2: qué nivel', w: 240, h: 170 },
-  gif: { content: '', editUrl: '', w: 240, h: 180, loadError: '' },
-}
-
 function App() {
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
@@ -150,7 +133,13 @@ function App() {
   const [viewport, setViewport] = useState({ width: 1, height: 1 })
   const [spacePressed, setSpacePressed] = useState(false)
   const [isPanning, setIsPanning] = useState(false)
-  const [view, setView] = useState({ zoom: 1, panX: 0, panY: 0 })
+
+  const { view, setView, zoomAtPoint, panByPointerDrag, zoomIn, zoomOut, resetView, fitToScreen } = useCanvasViewport({
+    minZoom: MIN_ZOOM,
+    maxZoom: MAX_ZOOM,
+    worldWidth: WORLD_WIDTH,
+    worldHeight: WORLD_HEIGHT,
+  })
 
   const mainRef = useRef(null)
   const backCanvasRef = useRef(null)
@@ -196,15 +185,12 @@ function App() {
       const cursorX = event.clientX - rect.left
       const cursorY = event.clientY - rect.top
 
-      setView((prev) => {
-        const nextZoom = clamp(prev.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM)
-        const worldX = (cursorX - prev.panX) / prev.zoom
-        const worldY = (cursorY - prev.panY) / prev.zoom
-        const rawPanX = cursorX - worldX * nextZoom
-        const rawPanY = cursorY - worldY * nextZoom
-        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * nextZoom)
-        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * nextZoom)
-        return { zoom: nextZoom, panX: clamp(rawPanX, minPanX, 0), panY: clamp(rawPanY, minPanY, 0) }
+      zoomAtPoint({
+        deltaY: event.deltaY,
+        cursorX,
+        cursorY,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
       })
     }
 
@@ -338,18 +324,11 @@ function App() {
   }
 
   const addItem = (type) => {
-    const nextItem = {
+    const nextItem = createModuleItem({
       id: randomId(),
       type,
-      x: 80,
-      y: 80,
-      w: 180,
-      h: 120,
-      content: '',
-      editUrl: '',
       z: clamp(getMaxZ() + 1, Z_BASE_ITEM, MAX_LAYER_Z),
-      ...defaultItemsByType[type],
-    }
+    })
 
     setRoomWithHistory((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
     setSelectedItemId(nextItem.id)
@@ -641,12 +620,15 @@ function App() {
 
     if (panDragRef.current) {
       const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
-      setView((prevView) => {
-        const nextPanX = panStartX + (event.clientX - pointerStartX)
-        const nextPanY = panStartY + (event.clientY - pointerStartY)
-        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * prevView.zoom)
-        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * prevView.zoom)
-        return { ...prevView, panX: clamp(nextPanX, minPanX, 0), panY: clamp(nextPanY, minPanY, 0) }
+      panByPointerDrag({
+        pointerStartX,
+        pointerStartY,
+        panStartX,
+        panStartY,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
       })
       return
     }
@@ -873,13 +855,10 @@ function App() {
         }}
       >
         <div className="viewport-tools">
-          <button onClick={() => setView((prevView) => ({ ...prevView, zoom: clamp(prevView.zoom * 1.1, MIN_ZOOM, MAX_ZOOM) }))}>+</button>
-          <button onClick={() => setView((prevView) => ({ ...prevView, zoom: clamp(prevView.zoom * 0.9, MIN_ZOOM, MAX_ZOOM) }))}>-</button>
-          <button onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>Restablecer vista</button>
-          <button onClick={() => {
-            const fitZoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM)
-            setView({ zoom: fitZoom, panX: (viewport.width - WORLD_WIDTH * fitZoom) / 2, panY: (viewport.height - WORLD_HEIGHT * fitZoom) / 2 })
-          }}>
+          <button onClick={zoomIn}>+</button>
+          <button onClick={zoomOut}>-</button>
+          <button onClick={resetView}>Restablecer vista</button>
+          <button onClick={() => fitToScreen(viewport.width, viewport.height)}>
             Ajustar a pantalla
           </button>
         </div>
