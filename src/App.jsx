@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 // =========================
 // Configuración base
 // =========================
 const STORAGE_KEY = 'achantes-room-v2'
+const DESIGN_WIDTH = 1600
+const DESIGN_HEIGHT = 900
 
 const moduleOptions = [
   { type: 'poster', label: 'Poster URL' },
@@ -30,6 +32,22 @@ const defaultRoom = {
   style: 'grunge-neon',
   items: [],
   collage: { layers: [], strokesBack: [], strokesFront: [] },
+}
+
+
+const normalizeGifUrl = (rawUrl) => {
+  const value = rawUrl.trim()
+  if (!value) return ''
+
+  if (/\.(gif|webp)(\?|$)/i.test(value) || value.startsWith('data:image/')) return value
+
+  const tenorMatch = value.match(/tenor\.com\/(?:view|es\/view)\/[^/]*-(\d+)/i)
+  if (tenorMatch) return `https://media.tenor.com/${tenorMatch[1]}/tenor.gif`
+
+  const giphyMatch = value.match(/giphy\.com\/(?:gifs|media)\/[^/]*-([a-zA-Z0-9]+)$/i)
+  if (giphyMatch) return `https://media.giphy.com/media/${giphyMatch[1]}/giphy.gif`
+
+  return value
 }
 
 const defaultItemsByType = {
@@ -74,10 +92,24 @@ function App() {
   const backCanvasRef = useRef(null)
   const frontCanvasRef = useRef(null)
   const drawTargetRef = useRef(drawTarget)
+  const [surfaceScale, setSurfaceScale] = useState(1)
 
   useEffect(() => {
     drawTargetRef.current = drawTarget
   }, [drawTarget])
+
+  useLayoutEffect(() => {
+    const updateScale = () => {
+      if (!mainRef.current) return
+      const rect = mainRef.current.getBoundingClientRect()
+      const scale = Math.min(rect.width / DESIGN_WIDTH, rect.height / DESIGN_HEIGHT)
+      setSurfaceScale(scale || 1)
+    }
+
+    updateScale()
+    window.addEventListener('resize', updateScale)
+    return () => window.removeEventListener('resize', updateScale)
+  }, [])
 
   // =========================
   // Persistencia y tema
@@ -176,7 +208,7 @@ function App() {
 
   const getPoint = (event) => {
     const rect = mainRef.current.getBoundingClientRect()
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    return { x: (event.clientX - rect.left) / surfaceScale, y: (event.clientY - rect.top) / surfaceScale }
   }
 
   const startStroke = (event) => {
@@ -274,11 +306,13 @@ function App() {
   // =========================
   const onMainMove = (event) => {
     const rect = event.currentTarget.getBoundingClientRect()
+    const logicalWidth = rect.width / surfaceScale
+    const logicalHeight = rect.height / surfaceScale
 
     if (draggingId && !drawMode) {
       updateItem(draggingId, {
-        x: clamp(event.clientX - rect.left - 60, 0, rect.width - 120),
-        y: clamp(event.clientY - rect.top - 24, 0, rect.height - 60),
+        x: clamp((event.clientX - rect.left) / surfaceScale - 60, 0, logicalWidth - 120),
+        y: clamp((event.clientY - rect.top) / surfaceScale - 24, 0, logicalHeight - 60),
       })
     }
 
@@ -286,8 +320,8 @@ function App() {
       const layer = room.collage.layers.find((entry) => entry.id === dragLayerId)
       if (!layer) return
       updateLayer(dragLayerId, {
-        x: clamp(event.clientX - rect.left - layer.w / 2, 0, rect.width - layer.w),
-        y: clamp(event.clientY - rect.top - layer.h / 2, 0, rect.height - layer.h),
+        x: clamp((event.clientX - rect.left) / surfaceScale - layer.w / 2, 0, logicalWidth - layer.w),
+        y: clamp((event.clientY - rect.top) / surfaceScale - layer.h / 2, 0, logicalHeight - layer.h),
       })
     }
 
@@ -295,8 +329,8 @@ function App() {
       const item = room.items.find((entry) => entry.id === resizeItemId)
       if (!item) return
       updateItem(resizeItemId, {
-        w: clamp(event.clientX - rect.left - item.x, 80, rect.width - item.x),
-        h: clamp(event.clientY - rect.top - item.y, 80, rect.height - item.y),
+        w: clamp((event.clientX - rect.left) / surfaceScale - item.x, 80, logicalWidth - item.x),
+        h: clamp((event.clientY - rect.top) / surfaceScale - item.y, 80, logicalHeight - item.y),
       })
     }
 
@@ -304,8 +338,8 @@ function App() {
       const layer = room.collage.layers.find((entry) => entry.id === resizeLayerId)
       if (!layer) return
       updateLayer(resizeLayerId, {
-        w: clamp(event.clientX - rect.left - layer.x, 60, rect.width - layer.x),
-        h: clamp(event.clientY - rect.top - layer.y, 60, rect.height - layer.y),
+        w: clamp((event.clientX - rect.left) / surfaceScale - layer.x, 60, logicalWidth - layer.x),
+        h: clamp((event.clientY - rect.top) / surfaceScale - layer.y, 60, logicalHeight - layer.y),
       })
     }
   }
@@ -334,9 +368,9 @@ function App() {
   const applyGifUrl = (itemId) => {
     const item = room.items.find((entry) => entry.id === itemId)
     if (!item) return
-    const nextUrl = item.editUrl?.trim()
+    const nextUrl = normalizeGifUrl(item.editUrl || '')
     if (!nextUrl) return
-    updateItem(itemId, { content: nextUrl })
+    updateItem(itemId, { content: nextUrl, editUrl: nextUrl, loadError: '' })
   }
 
   if (stage === 'landing') {
@@ -372,7 +406,8 @@ function App() {
         {moduleOptions.map((module) => <button key={module.type} onClick={() => addItem(module.type)}>{module.label}</button>)}
       </aside>
 
-      <main ref={mainRef} style={{ background: roomGradient }} onMouseMove={onMainMove} onMouseUp={clearDraggingState}>
+      <main ref={mainRef} onMouseMove={onMainMove} onMouseUp={clearDraggingState}>
+        <div className="design-surface" style={{ background: roomGradient, width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `translate(-50%, -50%) scale(${surfaceScale})` }}>
         <canvas ref={backCanvasRef} className="bg-canvas" />
 
         {room.collage.layers.sort((a, b) => a.z - b.z).map((layer) => (
@@ -396,7 +431,15 @@ function App() {
             style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h }}
             onMouseDown={() => { setSelectedItemId(item.id); setSelectedLayerId(null); if (!drawMode) setDraggingId(item.id) }}
           >
-            {(item.type === 'poster' || item.type === 'gif') && <img src={item.content} alt={item.type} draggable={false} />}
+            {(item.type === 'poster' || item.type === 'gif') && (
+              <img
+                src={item.content}
+                alt={item.type}
+                draggable={false}
+                onError={() => item.type === 'gif' && updateItem(item.id, { loadError: 'No se pudo cargar este GIF. Usa enlace directo .gif o de Giphy/Tenor.' })}
+                onLoad={() => item.type === 'gif' && item.loadError && updateItem(item.id, { loadError: '' })}
+              />
+            )}
 
             {item.type === 'gif' && (
               <div className="gif-controls" onMouseDown={(e) => e.stopPropagation()}>
@@ -409,6 +452,7 @@ function App() {
                 <button type="button" onClick={() => applyGifUrl(item.id)}>Aplicar</button>
               </div>
             )}
+            {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
 
             {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(e) => updateItem(item.id, { content: e.target.textContent })}>{item.content}</h5>}
             {item.type === 'postit' && <textarea value={item.content} onChange={(e) => updateItem(item.id, { content: e.target.value })} />}
@@ -419,6 +463,7 @@ function App() {
             <button className="resize-handle" onMouseDown={(e) => { e.stopPropagation(); setResizeItemId(item.id) }} aria-label="resize" />
           </div>
         ))}
+        </div>
       </main>
     </div>
   )
