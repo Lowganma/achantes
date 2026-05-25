@@ -11,6 +11,9 @@ const MAX_ZOOM = 3
 const MENU_WIDTH_KEY = 'achantes-menu-width-v1'
 const MIN_MENU_WIDTH = 240
 const MAX_MENU_WIDTH = 460
+const MAX_HISTORY_ENTRIES = 40
+const MAX_PASTE_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_PASTE_IMAGE_DIMENSION = 400
 
 // Z-index lógico por familias
 const Z_BASE_BACKGROUND = 1
@@ -57,6 +60,43 @@ const normalizeRoomState = (value) => ({
   },
   drawLayers: (value && value.drawLayers) || { back: 'Dibujo fondo', front: 'Dibujo frontal' },
 })
+
+
+const normalizeLayer = (layer) => {
+  if (!layer || typeof layer !== 'object' || !layer.src) return null
+  return {
+    id: layer.id || randomId(),
+    src: String(layer.src),
+    x: clamp(Number(layer.x) || 0, 0, WORLD_WIDTH),
+    y: clamp(Number(layer.y) || 0, 0, WORLD_HEIGHT),
+    w: clamp(Number(layer.w) || 240, 40, WORLD_WIDTH),
+    h: clamp(Number(layer.h) || 180, 40, WORLD_HEIGHT),
+    z: clamp(Number(layer.z) || Z_BASE_BACKGROUND, Z_BASE_BACKGROUND, MAX_LAYER_Z),
+  }
+}
+
+const isValidUrl = (value = '') => {
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol)
+  } catch {
+    return false
+  }
+}
+
+const sanitizeRoomState = (value) => {
+  const normalized = normalizeRoomState(value)
+  return {
+    ...normalized,
+    items: Array.isArray(normalized.items) ? normalized.items.filter(Boolean) : [],
+    collage: {
+      ...normalized.collage,
+      layers: (Array.isArray(normalized.collage.layers) ? normalized.collage.layers : []).map(normalizeLayer).filter(Boolean),
+      strokesBack: Array.isArray(normalized.collage.strokesBack) ? normalized.collage.strokesBack : [],
+      strokesFront: Array.isArray(normalized.collage.strokesFront) ? normalized.collage.strokesFront : [],
+    },
+  }
+}
 
 const normalizeGifUrl = (rawUrl = '') => {
   const value = rawUrl.trim()
@@ -127,9 +167,16 @@ function App() {
   const menuResizeRef = useRef(null)
   const cropStartRef = useRef(null)
   const [cropRect, setCropRect] = useState(null)
+  const [toast, setToast] = useState('')
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
   useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
+
+  const notify = (message) => {
+    setToast(message)
+    window.clearTimeout(notify.timer)
+    notify.timer = window.setTimeout(() => setToast(''), 2800)
+  }
 
   useEffect(() => {
     if (!mainRef.current || typeof ResizeObserver === 'undefined') return
@@ -192,7 +239,7 @@ function App() {
 
     try {
       const parsed = JSON.parse(saved)
-      setRoom({ ...defaultRoom, ...parsed, collage: { layers: [], strokesBack: [], strokesFront: [], ...(parsed.collage || {}) } })
+      setRoom(sanitizeRoomState(parsed))
       setStage('room')
     } catch {
       localStorage.removeItem(STORAGE_KEY)
@@ -200,14 +247,20 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
+    if (stage !== 'room') return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
+    } catch {
+      notify('No se pudo guardar la sala en tu navegador (espacio insuficiente).')
+    }
   }, [room, stage])
 
   const setRoomWithHistory = (updater, { recordHistory = true } = {}) => {
     setRoom((prevRoom) => {
-      const nextRoom = normalizeRoomState(typeof updater === 'function' ? updater(prevRoom) : updater)
+      const nextRoom = sanitizeRoomState(typeof updater === 'function' ? updater(prevRoom) : updater)
       if (!recordHistory || skipHistoryRef.current || nextRoom === prevRoom) return nextRoom
-      undoStackRef.current.push(normalizeRoomState(prevRoom))
+      undoStackRef.current.push(sanitizeRoomState(prevRoom))
+      if (undoStackRef.current.length > MAX_HISTORY_ENTRIES) undoStackRef.current.shift()
       redoStackRef.current = []
       return nextRoom
     })
@@ -439,8 +492,6 @@ function App() {
         [key]: [...prevRoom.collage[key], stroke],
       },
     }))
-    undoStackRef.current.push({ target: key, stroke })
-    redoStackRef.current = []
     setCurrentStroke([])
     strokeSessionRef.current += 1
   }
@@ -450,8 +501,8 @@ function App() {
     if (!previousRoom) return
     skipHistoryRef.current = true
     setRoom((currentRoom) => {
-      redoStackRef.current.push(normalizeRoomState(currentRoom))
-      return normalizeRoomState(previousRoom)
+      redoStackRef.current.push(sanitizeRoomState(currentRoom))
+      return sanitizeRoomState(previousRoom)
     })
     skipHistoryRef.current = false
     setCurrentStroke([])
@@ -462,8 +513,8 @@ function App() {
     if (!nextRoom) return
     skipHistoryRef.current = true
     setRoom((currentRoom) => {
-      undoStackRef.current.push(normalizeRoomState(currentRoom))
-      return normalizeRoomState(nextRoom)
+      undoStackRef.current.push(sanitizeRoomState(currentRoom))
+      return sanitizeRoomState(nextRoom)
     })
     skipHistoryRef.current = false
     setCurrentStroke([])
@@ -535,20 +586,47 @@ function App() {
       if (!clipboardItems) return
 
       for (const item of clipboardItems) {
-        if (item.type.startsWith('image/')) {
-          const file = item.getAsFile()
-          if (!file) continue
-          const reader = new FileReader()
-          reader.onload = () => addBackgroundImage(reader.result, lastPointerRef.current.x, lastPointerRef.current.y)
-          reader.readAsDataURL(file)
-          continue
-        }
-
         if (item.type === 'text/plain') {
           item.getAsString((text) => {
             const cleanText = text.trim()
-            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText, lastPointerRef.current.x, lastPointerRef.current.y)
+            if (!isValidUrl(cleanText)) return
+            addBackgroundImage(cleanText, Math.max(0, lastPointerRef.current.x - 120), Math.max(0, lastPointerRef.current.y - 90))
           })
+          continue
+        }
+
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (!file) continue
+          if (file.size > MAX_PASTE_IMAGE_BYTES) {
+            notify('La imagen pegada pesa demasiado. Usa una imagen más liviana.')
+            continue
+          }
+          event.preventDefault()
+          const reader = new FileReader()
+          reader.onerror = () => notify('No se pudo leer la imagen pegada.')
+          reader.onload = () => {
+            const src = typeof reader.result === 'string' ? reader.result : ''
+            if (!src) return
+            const img = new Image()
+            img.onload = () => {
+              const ratio = Math.min(1, MAX_PASTE_IMAGE_DIMENSION / Math.max(img.width || 1, img.height || 1))
+              const w = Math.max(40, Math.round((img.width || 240) * ratio))
+              const h = Math.max(40, Math.round((img.height || 180) * ratio))
+              const x = clamp(((viewport.width / view.zoom) - w) / 2 - (view.panX / view.zoom), 0, WORLD_WIDTH - w)
+              const y = clamp(((viewport.height / view.zoom) - h) / 2 - (view.panY / view.zoom), 0, WORLD_HEIGHT - h)
+              setRoomWithHistory((prevRoom) => ({
+                ...prevRoom,
+                collage: {
+                  ...prevRoom.collage,
+                  layers: [...prevRoom.collage.layers, { id: randomId(), src, x, y, w, h, z: clamp(getMaxZ() + 1, Z_BASE_BACKGROUND, MAX_LAYER_Z) }],
+                },
+              }))
+            }
+            img.onerror = () => notify('La imagen pegada no pudo cargarse.')
+            img.src = src
+          }
+          reader.readAsDataURL(file)
         }
       }
     }
@@ -813,7 +891,7 @@ function App() {
           <canvas ref={backCanvasRef} className="bg-canvas" />
           {room.backgroundImageUrl && (
             <div className="room-background-image">
-              <img src={room.backgroundImageUrl} alt="Fondo de sala" />
+              <img src={room.backgroundImageUrl} alt="Fondo de sala" onError={() => notify('No se pudo cargar la imagen de fondo.')} />
             </div>
           )}
 
@@ -833,7 +911,8 @@ function App() {
                 }
               }}
             >
-              <img src={layer.src} alt="layer" draggable={false} />
+              <img src={layer.src} alt="layer" draggable={false} onError={() => updateLayer(layer.id, { loadError: 'No se pudo cargar imagen' }, { recordHistory: false })} onLoad={() => layer.loadError && updateLayer(layer.id, { loadError: '' }, { recordHistory: false })} />
+              {layer.loadError && <small className="gif-error">{layer.loadError}</small>}
               {showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}
               <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); interactionStartRef.current = room; interactionDirtyRef.current = false; setResizeLayerId(layer.id) }} aria-label="resize" />
             </div>
@@ -902,6 +981,7 @@ function App() {
           ))}
         </div>
       </main>
+      {toast && <div className="toast">{toast}</div>}
     </div>
   )
 }
