@@ -58,9 +58,6 @@ const defaultItemsByType = {
 }
 
 function App() {
-  // =========================
-  // Estado principal
-  // =========================
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
   const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
@@ -146,6 +143,7 @@ function App() {
     setRoom({ ...defaultRoom, ...parsed, collage: { layers: [], strokesBack: [], strokesFront: [], ...(parsed.collage || {}) } })
     setStage('room')
   }, [])
+  useEffect(() => { if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room)) }, [room, stage])
 
   useEffect(() => {
     if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
@@ -165,7 +163,8 @@ function App() {
     const itemMax = room.items.reduce((max, it) => Math.max(max, it.z || Z_BASE_ITEM), Z_BASE_ITEM)
     return Math.max(layerMax, itemMax)
   }
-
+  const updateItem = (id, patch) => setRoom((p) => ({ ...p, items: p.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }))
+  const updateLayer = (id, patch) => setRoom((p) => ({ ...p, collage: { ...p.collage, layers: p.collage.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)) } }))
   const removeSelectedEntity = () => {
     if (selectedItemId) {
       setRoom((p) => ({ ...p, items: p.items.filter((it) => it.id !== selectedItemId) }))
@@ -212,6 +211,7 @@ function App() {
     setSelectedItemId(nextItem.id)
     setSelectedLayerId(null)
   }
+  const addBackgroundImage = (src, x = 50, y = 60) => setRoom((p) => ({ ...p, collage: { ...p.collage, layers: [...p.collage.layers, { id: randomId(), src, x, y, w: 240, h: 180, z: p.collage.layers.length + 1 }] } }))
 
   const addBackgroundImage = (src, x = 50, y = 60) => {
     setRoom((p) => ({
@@ -246,7 +246,6 @@ function App() {
     setRoom((p) => ({ ...p, collage: { ...p.collage, [key]: [...p.collage[key], { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }] } }))
     setCurrentStroke([])
   }
-
   const undoStroke = (target = drawTargetRef.current) => {
     const key = target === 'back' ? 'strokesBack' : 'strokesFront'
     setRoom((p) => ({ ...p, collage: { ...p.collage, [key]: p.collage[key].slice(0, -1) } }))
@@ -352,9 +351,7 @@ function App() {
     updateItem(itemId, { content: nextUrl, editUrl: nextUrl, loadError: '' })
   }
 
-  if (stage === 'landing') {
-    return <div className="min-h-screen landing"><header><h1>Achantes</h1><p>Arma tu achante</p></header><form className="card" onSubmit={createRoom}><h2>Crea tu sala</h2><input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /><textarea placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /><label>Color de pared <input type="color" value={form.wallColor} onChange={(e) => setForm({ ...form, wallColor: e.target.value })} /></label><select value={form.style} onChange={(e) => setForm({ ...form, style: e.target.value })}><option value="grunge-neon">Grunge neón</option><option value="punk-zine">Punk zine</option><option value="retro-pop">Retro pop</option></select><button type="submit">Entrar a la sala</button></form></div>
-  }
+  if (stage === 'landing') return <div className="min-h-screen landing"><header><h1>Achantes</h1><p>Arma tu achante</p></header><form className="card" onSubmit={createRoom}><h2>Crea tu sala</h2><input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /><textarea placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /><label>Color de pared <input type="color" value={form.wallColor} onChange={(e) => setForm({ ...form, wallColor: e.target.value })} /></label><select value={form.style} onChange={(e) => setForm({ ...form, style: e.target.value })}><option value="grunge-neon">Grunge neón</option><option value="punk-zine">Punk zine</option><option value="retro-pop">Retro pop</option></select><button type="submit">Entrar a la sala</button></form></div>
 
   return (
     <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`}>
