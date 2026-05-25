@@ -19,11 +19,10 @@ const TOOL = {
 
 const randomId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
-
 const isFormField = (element) => {
   if (!element) return false
-  const tagName = element.tagName?.toLowerCase()
-  return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || element.isContentEditable
+  const tag = element.tagName?.toLowerCase()
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || element.isContentEditable
 }
 
 const defaultRoom = {
@@ -55,6 +54,20 @@ function App() {
   const mainRef = useRef(null)
   const drawCanvasRef = useRef(null)
   const panDragRef = useRef(null)
+  // =========================
+  // Historial global unificado
+  // =========================
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
+  const skipHistoryRef = useRef(false)
+
+  const snapshotRoom = (value) => JSON.parse(JSON.stringify(value))
+  const pushHistorySnapshot = (value) => {
+    if (skipHistoryRef.current) return
+    undoStackRef.current.push(snapshotRoom(value))
+    if (undoStackRef.current.length > 120) undoStackRef.current.shift()
+    redoStackRef.current = []
+  }
 
   // =========================
   // Historial global unificado
@@ -120,10 +133,10 @@ function App() {
       undoStackRef.current = [snapshotRoom(hydrated)]
       redoStackRef.current = []
       setStage('room')
-    } catch {
-      localStorage.removeItem(STORAGE_KEY)
-    }
+    } catch { localStorage.removeItem(STORAGE_KEY) }
   }, [])
+
+  useEffect(() => { if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room)) }, [room, stage])
 
   useEffect(() => {
     if (stage !== 'room') return
@@ -154,6 +167,7 @@ function App() {
       ctx.beginPath()
       stroke.points.forEach((point, idx) => (idx === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
       ctx.stroke()
+      ctx.globalAlpha = 1
     })
   }, [room.strokes, currentStroke, brushColor, brushSize])
 
