@@ -94,6 +94,20 @@ function App() {
   const frontCanvasRef = useRef(null)
   const drawTargetRef = useRef(drawTarget)
   const panDragRef = useRef(null)
+  // =========================
+  // Historial global unificado
+  // =========================
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
+  const skipHistoryRef = useRef(false)
+
+  const snapshotRoom = (value) => JSON.parse(JSON.stringify(value))
+  const pushHistorySnapshot = (value) => {
+    if (skipHistoryRef.current) return
+    undoStackRef.current.push(snapshotRoom(value))
+    if (undoStackRef.current.length > 120) undoStackRef.current.shift()
+    redoStackRef.current = []
+  }
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -109,6 +123,14 @@ function App() {
     if (!host) return
 
     const onNativeWheel = (event) => {
+      if (event.shiftKey && !event.ctrlKey) {
+        event.preventDefault()
+        setView((prev) => {
+          const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * prev.zoom)
+          return { ...prev, panX: clamp(prev.panX - event.deltaY, minPanX, 0) }
+        })
+        return
+      }
       if (!event.ctrlKey) return
       event.preventDefault()
       const rect = host.getBoundingClientRect()
@@ -152,6 +174,11 @@ function App() {
 
   useEffect(() => {
     if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room))
+  }, [room, stage])
+
+  useEffect(() => {
+    if (stage !== 'room') return
+    pushHistorySnapshot(room)
   }, [room, stage])
 
   const getCanvasPoint = (event) => {
@@ -276,6 +303,8 @@ function App() {
   }
 
   const startStroke = (event) => {
+    // Solo click izquierdo dibuja. Click derecho y rueda quedan reservados.
+    if (event.button !== 0) return
     if (drawMode && !handMode) setCurrentStroke([getCanvasPoint(event)])
   }
 
@@ -300,12 +329,25 @@ function App() {
     setCurrentStroke([])
   }
 
-  const undoStroke = (target = drawTargetRef.current) => {
-    const key = target === 'back' ? 'strokesBack' : 'strokesFront'
-    setRoom((prevRoom) => ({
-      ...prevRoom,
-      collage: { ...prevRoom.collage, [key]: prevRoom.collage[key].slice(0, -1) },
-    }))
+  const undoGlobal = () => {
+    if (undoStackRef.current.length < 2) return
+    const current = undoStackRef.current.pop()
+    const previous = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!previous) return
+    redoStackRef.current.push(current)
+    skipHistoryRef.current = true
+    setRoom(snapshotRoom(previous))
+    requestAnimationFrame(() => { skipHistoryRef.current = false })
+  }
+
+  const redoGlobal = () => {
+    if (redoStackRef.current.length === 0) return
+    const next = redoStackRef.current.pop()
+    if (!next) return
+    undoStackRef.current.push(snapshotRoom(next))
+    skipHistoryRef.current = true
+    setRoom(snapshotRoom(next))
+    requestAnimationFrame(() => { skipHistoryRef.current = false })
   }
 
   useEffect(() => {
@@ -321,7 +363,23 @@ function App() {
       const activeField = isFormField(document.activeElement)
       if ((event.ctrlKey || event.metaKey) && key === 'z') {
         event.preventDefault()
-        undoStroke()
+        undoGlobal()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+        event.preventDefault()
+        redoGlobal()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === '0') {
+        event.preventDefault()
+        const fitZoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM)
+        setView({ zoom: fitZoom, panX: (viewport.width - WORLD_WIDTH * fitZoom) / 2, panY: (viewport.height - WORLD_HEIGHT * fitZoom) / 2 })
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === '1') {
+        event.preventDefault()
+        setView((prev) => ({ ...prev, zoom: 1 }))
         return
       }
       if (!activeField && (key === 'delete' || key === 'backspace')) {
@@ -340,6 +398,8 @@ function App() {
         setDrawMode(false)
         return
       }
+      if (!activeField && key === 'b') { setDrawMode(true); setHandMode(false); return }
+      if (!activeField && key === 'h') { setHandMode(true); setDrawMode(false); return }
       if (key === 'escape') {
         setSelectedItemId(null)
         setSelectedLayerId(null)
@@ -357,7 +417,7 @@ function App() {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [selectedItemId, selectedLayerId, currentStroke, drawMode, handMode])
+  }, [selectedItemId, selectedLayerId, currentStroke, drawMode, handMode, viewport.width, viewport.height])
 
   useEffect(() => {
     const onPaste = (event) => {
@@ -545,7 +605,8 @@ function App() {
               Tamaño
               <input type="range" min="1" max="30" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
             </label>
-            <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button>
+            <button onClick={() => undoGlobal()}>Deshacer global (Ctrl/Cmd+Z)</button>
+            <button onClick={() => redoGlobal()}>Rehacer global (Ctrl/Cmd+Y)</button>
             <input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(event) => setPastingUrl(event.target.value)} />
             <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>
               Agregar al fondo
