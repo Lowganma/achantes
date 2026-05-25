@@ -10,16 +10,31 @@ button { border: 0; padding: .65rem .8rem; border-radius: 12px; background: #9b5
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 300px 1fr; }
 aside { background: #120d1f; border-right: 1px solid #402d63; padding: 1rem; display: grid; align-content: start; gap: .5rem; }
 main { position: relative; overflow: hidden; }
+.design-surface { position: absolute; left: 50%; top: 50%; transform-origin: center; overflow: hidden; }
 .bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
-.bg-canvas.front { z-index: 5; }
+.bg-canvas.front { z-index: 20; }
 .bg-canvas.front.drawing { pointer-events: auto; cursor: crosshair; }
-.bg-layer { position: absolute; border: 1px dashed rgba(255,255,255,.45); z-index: 3; }
+.bg-layer { position: absolute; border: 1px solid transparent; z-index: 3; }
 .bg-layer img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 .bg-layer.selected { border-color: #f5e663; box-shadow: 0 0 0 2px #f5e66355; }
-.resize-handle { position: absolute; width: 12px; height: 12px; border-radius: 2px; right: -6px; bottom: -6px; background: #f5e663; padding: 0; }
-.item { position: absolute; padding: .5rem; border: 1px dashed #ddd; background: rgba(0,0,0,.35); border-radius: 10px; user-select: none; z-index: 10; }
+.resize-handle { position: absolute; width: 12px; height: 12px; border-radius: 2px; right: -6px; bottom: -6px; background: #f5e663; padding: 0; display: none; }
+.bg-layer.selected .resize-handle, .item.selected .resize-handle { display: block; }
+.item { position: absolute; padding: .5rem; border: 1px solid transparent; background: rgba(0,0,0,.35); border-radius: 10px; user-select: none; z-index: 10; }
+.item.selected { border-color: #f5e663; box-shadow: 0 0 0 2px #f5e66355; }
 .item img { width: 100%; border-radius: 8px; display: block; }
 .item-postit { background: #ffe663; color: #2f1d00; }
 .item-signwall { background: rgba(255,255,255,.92); color: #1a1328; }
 .item textarea { width: 100%; min-height: 70px; }
 small { opacity: .8; }
+
+.item-gif { border: none; background: transparent; padding: 0; }
+.item-gif img { border-radius: 0; }
+.item-gif input { margin-top: .35rem; width: 100%; font-size: .8rem; }
+.item .resize-handle { z-index: 2; }
+
+
+.gif-controls { display: grid; grid-template-columns: 1fr auto; gap: .35rem; margin-top: .35rem; }
+.gif-controls input { font-size: .8rem; padding: .45rem; }
+.gif-controls button { padding: .45rem .55rem; border-radius: 8px; font-size: .75rem; }
+
+.gif-error { color: #ffb6b6; display: block; margin-top: .25rem; }
