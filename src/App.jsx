@@ -41,6 +41,17 @@ const defaultRoom = {
   collage: { layers: [], strokesBack: [], strokesFront: [] },
 }
 
+const normalizeRoomState = (value) => ({
+  ...defaultRoom,
+  ...(value || {}),
+  collage: {
+    layers: [],
+    strokesBack: [],
+    strokesFront: [],
+    ...((value && value.collage) || {}),
+  },
+})
+
 const normalizeGifUrl = (rawUrl = '') => {
   const value = rawUrl.trim()
   if (!value) return ''
@@ -162,9 +173,9 @@ function App() {
 
   const setRoomWithHistory = (updater, { recordHistory = true } = {}) => {
     setRoom((prevRoom) => {
-      const nextRoom = typeof updater === 'function' ? updater(prevRoom) : updater
+      const nextRoom = normalizeRoomState(typeof updater === 'function' ? updater(prevRoom) : updater)
       if (!recordHistory || skipHistoryRef.current || nextRoom === prevRoom) return nextRoom
-      undoStackRef.current.push(prevRoom)
+      undoStackRef.current.push(normalizeRoomState(prevRoom))
       redoStackRef.current = []
       return nextRoom
     })
@@ -325,10 +336,11 @@ function App() {
     if (!previousRoom) return
     skipHistoryRef.current = true
     setRoom((currentRoom) => {
-      redoStackRef.current.push(currentRoom)
-      return previousRoom
+      redoStackRef.current.push(normalizeRoomState(currentRoom))
+      return normalizeRoomState(previousRoom)
     })
     skipHistoryRef.current = false
+    setCurrentStroke([])
   }
 
   const redoStroke = () => {
@@ -336,10 +348,11 @@ function App() {
     if (!nextRoom) return
     skipHistoryRef.current = true
     setRoom((currentRoom) => {
-      undoStackRef.current.push(currentRoom)
-      return nextRoom
+      undoStackRef.current.push(normalizeRoomState(currentRoom))
+      return normalizeRoomState(nextRoom)
     })
     skipHistoryRef.current = false
+    setCurrentStroke([])
   }
 
   useEffect(() => {
