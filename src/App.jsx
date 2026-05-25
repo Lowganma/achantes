@@ -331,6 +331,8 @@ function App() {
         [key]: [...prevRoom.collage[key], stroke],
       },
     }))
+    undoStackRef.current.push({ target: key, stroke })
+    redoStackRef.current = []
     setCurrentStroke([])
     strokeSessionRef.current += 1
   }
