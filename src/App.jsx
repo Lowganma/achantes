@@ -28,6 +28,7 @@ const moduleOptions = [
 
 const randomId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
 
 const isFormField = (element) => {
   if (!element) return false
@@ -354,7 +355,18 @@ function App() {
       } else {
         ctx.lineJoin = 'round'
         ctx.beginPath()
-        stroke.points.forEach((point, index) => (index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)))
+        const points = stroke.points
+        ctx.moveTo(points[0].x, points[0].y)
+        if (points.length === 2) {
+          ctx.lineTo(points[1].x, points[1].y)
+        } else {
+          for (let i = 1; i < points.length - 1; i += 1) {
+            const midX = (points[i].x + points[i + 1].x) / 2
+            const midY = (points[i].y + points[i + 1].y) / 2
+            ctx.quadraticCurveTo(points[i].x, points[i].y, midX, midY)
+          }
+          ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y)
+        }
         ctx.stroke()
       }
       if (stroke.tool === 'eraser') ctx.restore()
@@ -384,7 +396,26 @@ function App() {
       setCropRect({ x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) })
       return
     }
-    if (activeTool !== 'hand' && activeTool !== 'select' && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
+    if (activeTool !== 'hand' && activeTool !== 'select' && currentStroke.length > 0) {
+      const nextPoint = getCanvasPoint(event)
+      setCurrentStroke((prev) => {
+        const last = prev[prev.length - 1]
+        if (!last) return [nextPoint]
+        const minStep = activeTool === 'brush' ? 1.8 : 1.2
+        const dist = distance(last, nextPoint)
+        if (dist < minStep) return prev
+        const steps = Math.max(1, Math.floor(dist / minStep))
+        const interpolated = []
+        for (let i = 1; i <= steps; i += 1) {
+          const t = i / steps
+          interpolated.push({
+            x: last.x + (nextPoint.x - last.x) * t,
+            y: last.y + (nextPoint.y - last.y) * t,
+          })
+        }
+        return [...prev, ...interpolated]
+      })
+    }
   }
 
   const endStroke = (sessionId = strokeSessionRef.current) => {
