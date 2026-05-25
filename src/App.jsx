@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 // =========================
 // Configuración base canvas
 // =========================
+// NOTE(modularización): mover este bloque a `src/constants/canvasConfig.js`.
 const STORAGE_KEY = 'achantes-room-v2'
 const WORLD_WIDTH = 6000
 const WORLD_HEIGHT = 4000
@@ -29,6 +30,10 @@ const moduleOptions = [
   { type: 'gif', label: 'GIF URL' },
 ]
 
+// ======================
+// Helpers generales
+// ======================
+// NOTE(modularización): helpers de utilería a `src/utils/canvasMath.js` y `src/utils/roomValidation.js`.
 const randomId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
@@ -39,6 +44,9 @@ const isFormField = (element) => {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || element.isContentEditable
 }
 
+// =========================
+// Estado inicial de sala
+// =========================
 const defaultRoom = {
   name: 'Mi Achante',
   description: 'Un cuarto nostálgico para panas',
@@ -49,6 +57,10 @@ const defaultRoom = {
   collage: { layers: [], strokesBack: [], strokesFront: [] },
 }
 
+// =================================
+// Normalización y validación
+// =================================
+// NOTE(modularización): mover normalize/sanitize a `src/utils/roomValidation.js`.
 const normalizeRoomState = (value) => ({
   ...defaultRoom,
   ...(value || {}),
@@ -60,7 +72,6 @@ const normalizeRoomState = (value) => ({
   },
   drawLayers: (value && value.drawLayers) || { back: 'Dibujo fondo', front: 'Dibujo frontal' },
 })
-
 
 const normalizeLayer = (layer) => {
   if (!layer || typeof layer !== 'object' || !layer.src) return null
@@ -118,7 +129,13 @@ const defaultItemsByType = {
   gif: { content: '', editUrl: '', w: 240, h: 180, loadError: '' },
 }
 
+// ==============
+// Componente App
+// ==============
 function App() {
+  // ==================
+  // Estados de interfaz
+  // ==================
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
   const [form, setForm] = useState({ name: '', description: '', wallColor: '#32214d', style: 'grunge-neon' })
@@ -143,6 +160,9 @@ function App() {
   const [brushTaper, setBrushTaper] = useState(0.35)
   const [currentStroke, setCurrentStroke] = useState([])
 
+  // =================
+  // Estados del canvas
+  // =================
   const [draggingId, setDraggingId] = useState(null)
   const [dragLayerId, setDragLayerId] = useState(null)
   const [resizeLayerId, setResizeLayerId] = useState(null)
@@ -169,6 +189,7 @@ function App() {
   const [cropRect, setCropRect] = useState(null)
   const [toast, setToast] = useState('')
 
+  // Referencias internas para interacciones imperativas (drag, historial y dibujo activo).
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
   useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
 
@@ -179,6 +200,7 @@ function App() {
   }
 
   useEffect(() => {
+    // Observa tamaño visible del canvas para recalcular límites de pan/zoom responsivos.
     if (!mainRef.current || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(([entry]) => setViewport({ width: entry.contentRect.width, height: entry.contentRect.height }))
     observer.observe(mainRef.current)
@@ -186,6 +208,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    // ====================
+    // Zoom con rueda + Ctrl
+    // ====================
+    // NOTE(modularización): extraer lógica de viewport a `src/hooks/useCanvasViewport.js`.
     const host = mainRef.current
     if (!host) return
 
@@ -213,6 +239,8 @@ function App() {
   }, [viewport.width, viewport.height])
 
   useEffect(() => {
+    // Drag para redimensionar el menú lateral.
+    // NOTE(modularización): mover UI de sidebar a `src/components/Sidebar.jsx`.
     const onMove = (event) => {
       if (!menuResizeRef.current) return
       const nextWidth = clamp(menuResizeRef.current.startW + (event.clientX - menuResizeRef.current.startX), MIN_MENU_WIDTH, MAX_MENU_WIDTH)
@@ -228,11 +256,16 @@ function App() {
   }, [])
 
   const roomGradient = useMemo(() => {
+    // Fondo estilizado base de sala (si no hay imagen de fondo).
     if (room.style === 'punk-zine') return `linear-gradient(135deg, ${room.wallColor}, #111)`
     if (room.style === 'retro-pop') return `radial-gradient(circle at 20% 20%, #ff4d9d, ${room.wallColor})`
     return `linear-gradient(160deg, ${room.wallColor}, #180f28)`
   }, [room.style, room.wallColor])
 
+  // ============================
+  // Persistencia (localStorage)
+  // ============================
+  // NOTE(modularización): mover carga/guardado a `src/utils/roomStorage.js`.
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (!saved) return
@@ -256,6 +289,10 @@ function App() {
   }, [room, stage])
 
   const setRoomWithHistory = (updater, { recordHistory = true } = {}) => {
+    // ===================================
+    // Historial / undo-redo a nivel sala
+    // ===================================
+    // NOTE(modularización): migrar a `src/hooks/useRoomHistory.js`.
     setRoom((prevRoom) => {
       const nextRoom = sanitizeRoomState(typeof updater === 'function' ? updater(prevRoom) : updater)
       if (!recordHistory || skipHistoryRef.current || nextRoom === prevRoom) return nextRoom
@@ -267,6 +304,7 @@ function App() {
   }
 
   const getCanvasPoint = (event) => {
+    // Convierte coordenadas de pantalla a coordenadas del mundo (considerando pan/zoom).
     const rect = mainRef.current.getBoundingClientRect()
     return {
       x: (event.clientX - rect.left - view.panX) / view.zoom,
@@ -275,6 +313,7 @@ function App() {
   }
 
   const getMaxZ = () => {
+    // Cálculo del z-index máximo combinado entre capas de fondo e items.
     const layerMax = room.collage.layers.reduce((max, layer) => Math.max(max, layer.z || Z_BASE_BACKGROUND), Z_BASE_BACKGROUND)
     const itemMax = room.items.reduce((max, item) => Math.max(max, item.z || Z_BASE_ITEM), Z_BASE_ITEM)
     return clamp(Math.max(layerMax, itemMax), Z_BASE_BACKGROUND, MAX_LAYER_Z)
@@ -338,6 +377,10 @@ function App() {
   }
 
   const addItem = (type) => {
+    // =======================
+    // Módulos / items flotantes
+    // =======================
+    // NOTE(modularización): render y comportamiento por item a `src/components/RoomItem.jsx`.
     const nextItem = {
       id: randomId(),
       type,
@@ -357,6 +400,10 @@ function App() {
   }
 
   const addBackgroundImage = (src, x = 50, y = 60) => {
+    // =======================
+    // Capas e imágenes de fondo
+    // =======================
+    // NOTE(modularización): capa visual a `src/components/BackgroundLayer.jsx`.
     setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
@@ -370,6 +417,11 @@ function App() {
   }
 
   const drawStrokes = (canvas, strokes, previewStroke) => {
+    // ==================
+    // Sistema de dibujo
+    // ==================
+    // Renderiza trazos consolidados y preview temporal en canvas interno.
+    // NOTE(modularización): lógica de dibujo a `src/hooks/useDrawingTools.js`.
     if (!canvas) return
     canvas.width = WORLD_WIDTH
     canvas.height = WORLD_HEIGHT
@@ -521,6 +573,7 @@ function App() {
   }
 
   useEffect(() => {
+    // Re-render de canvas de dibujo (capa back/front + preview actual).
     if (stage !== 'room') return
     const preview = currentStroke.length > 1 ? { points: currentStroke, color: brushColor, size: activeTool === 'pencil' ? Math.max(1, Math.min(brushSize, 8)) : activeTool === 'eraser' ? Math.max(8, brushSize * 1.6) : Math.max(brushSize, 6), tool: activeTool, opacity: brushOpacity } : null
     drawStrokes(backCanvasRef.current, room.collage.strokesBack, drawTarget === 'back' ? preview : null)
@@ -528,6 +581,11 @@ function App() {
   }, [stage, room.collage.strokesBack, room.collage.strokesFront, currentStroke, drawTarget, brushColor, brushSize, activeTool, brushOpacity])
 
   useEffect(() => {
+    // =================
+    // Shortcuts globales
+    // =================
+    // Delete/backspace, undo/redo, hand tool y escape.
+    // NOTE(modularización): centralizar en `src/components/ShortcutModal.jsx` + hook de teclado.
     const onKeyDown = (event) => {
       const key = event.key.toLowerCase()
       const activeField = isFormField(document.activeElement)
@@ -580,6 +638,10 @@ function App() {
   }, [selectedItemId, selectedLayerId, currentStroke, activeTool])
 
   useEffect(() => {
+    // ====================================
+    // Pegado de URLs e imágenes del portapapeles
+    // ====================================
+    // Incluye controles de seguridad básicos (tipo de archivo, peso y normalización de tamaño).
     const onPaste = (event) => {
       if (stage !== 'room' || isFormField(event.target)) return
       const clipboardItems = event.clipboardData?.items
@@ -636,6 +698,9 @@ function App() {
   }, [stage, room, view])
 
   const onMainMove = (event) => {
+    // =================
+    // Pan, drag y resize
+    // =================
     const point = getCanvasPoint(event)
     lastPointerRef.current = { x: point.x, y: point.y }
 
@@ -730,6 +795,9 @@ function App() {
   }
 
   if (stage === 'landing') {
+    // ===============
+    // Render landing
+    // ===============
     return (
       <div className="min-h-screen landing">
         <header>
@@ -756,8 +824,13 @@ function App() {
   }
 
   return (
+    // ============
+    // Render sala
+    // ============
+    // NOTE(modularización): separar esta estructura en `Sidebar`, `CanvasStage` y modales auxiliares.
     <div className={`app-shell ${menuCollapsed ? 'menu-collapsed' : ''}`} style={{ '--menu-width': `${menuWidth}px` }}>
       <aside>
+        {/* Menú lateral: herramientas, capas, dibujo y módulos. */}
         <button className="menu-toggle" onClick={() => setMenuCollapsed((value) => !value)}>
           {menuCollapsed ? '▶ Abrir menú' : '◀ Ocultar menú'}
         </button>
@@ -890,12 +963,14 @@ function App() {
         >
           <canvas ref={backCanvasRef} className="bg-canvas" />
           {room.backgroundImageUrl && (
+            // Fondo de sala principal configurable por URL.
             <div className="room-background-image">
               <img src={room.backgroundImageUrl} alt="Fondo de sala" onError={() => notify('No se pudo cargar la imagen de fondo.')} />
             </div>
           )}
 
           {room.collage.layers.map((layer) => (
+            // Capas libres de collage (imágenes pegadas o por URL) con drag y resize.
             <div
               key={layer.id}
               className={`bg-layer ${selectedLayerId === layer.id ? 'selected' : ''}`}
@@ -929,6 +1004,7 @@ function App() {
           {cropRect && activeTool === 'crop' && <div className="crop-rect" style={{ left: cropRect.x, top: cropRect.y, width: cropRect.w, height: cropRect.h }} />}
 
           {room.items.map((item) => (
+            // Módulos interactivos flotantes (texto, post-it, player, dado, firmas, gif).
             <div
               key={item.id}
               className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`}
