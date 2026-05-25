@@ -55,8 +55,20 @@ function App() {
   const mainRef = useRef(null)
   const drawCanvasRef = useRef(null)
   const panDragRef = useRef(null)
-  const dragEntityRef = useRef(null)
-  const sidebarResizeRef = useRef(null)
+  // =========================
+  // Historial global unificado
+  // =========================
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
+  const skipHistoryRef = useRef(false)
+
+  const snapshotRoom = (value) => JSON.parse(JSON.stringify(value))
+  const pushHistorySnapshot = (value) => {
+    if (skipHistoryRef.current) return
+    undoStackRef.current.push(snapshotRoom(value))
+    if (undoStackRef.current.length > 120) undoStackRef.current.shift()
+    redoStackRef.current = []
+  }
 
   const drawEnabled = tool === 'brush' || tool === 'pencil' || tool === 'marker' || tool === 'eraser'
   const handMode = tool === 'hand' || spacePressed
@@ -71,16 +83,20 @@ function App() {
     })
   }
 
-  const undo = () => {
-    setHistory((h) => {
-      if (h.undoStack.length < 2) return h
-      const nextUndo = h.undoStack.slice(0, -1)
-      const current = h.undoStack[h.undoStack.length - 1]
-      const previous = nextUndo[nextUndo.length - 1]
-      setRoom(previous)
-      return { undoStack: nextUndo, redoStack: [current, ...h.redoStack] }
-    })
-  }
+    const onNativeWheel = (event) => {
+      if (event.shiftKey && !event.ctrlKey) {
+        event.preventDefault()
+        setView((prev) => {
+          const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * prev.zoom)
+          return { ...prev, panX: clamp(prev.panX - event.deltaY, minPanX, 0) }
+        })
+        return
+      }
+      if (!event.ctrlKey) return
+      event.preventDefault()
+      const rect = host.getBoundingClientRect()
+      const cursorX = event.clientX - rect.left
+      const cursorY = event.clientY - rect.top
 
   const redo = () => {
     setHistory((h) => {
@@ -112,11 +128,112 @@ function App() {
   useEffect(() => { if (stage === 'room') localStorage.setItem(STORAGE_KEY, JSON.stringify(room)) }, [room, stage])
 
   useEffect(() => {
-    if (!mainRef.current || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(([entry]) => setViewport({ width: entry.contentRect.width, height: entry.contentRect.height }))
-    observer.observe(mainRef.current)
-    return () => observer.disconnect()
-  }, [])
+    if (stage !== 'room') return
+    pushHistorySnapshot(room)
+  }, [room, stage])
+
+  const getCanvasPoint = (event) => {
+    const rect = mainRef.current.getBoundingClientRect()
+    return {
+      x: (event.clientX - rect.left - view.panX) / view.zoom,
+      y: (event.clientY - rect.top - view.panY) / view.zoom,
+    }
+  }
+
+  const getMaxZ = () => {
+    const layerMax = room.collage.layers.reduce((max, layer) => Math.max(max, layer.z || Z_BASE_BACKGROUND), Z_BASE_BACKGROUND)
+    const itemMax = room.items.reduce((max, item) => Math.max(max, item.z || Z_BASE_ITEM), Z_BASE_ITEM)
+    return clamp(Math.max(layerMax, itemMax), Z_BASE_BACKGROUND, MAX_LAYER_Z)
+  }
+
+  const updateItem = (id, patch) => {
+    setRoom((prevRoom) => ({
+      ...prevRoom,
+      items: prevRoom.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }))
+  }
+
+  const updateLayer = (id, patch) => {
+    setRoom((prevRoom) => ({
+      ...prevRoom,
+      collage: {
+        ...prevRoom.collage,
+        layers: prevRoom.collage.layers.map((layer) => (layer.id === id ? { ...layer, ...patch } : layer)),
+      },
+    }))
+  }
+
+  const removeSelectedEntity = () => {
+    if (selectedItemId) {
+      setRoom((prevRoom) => ({ ...prevRoom, items: prevRoom.items.filter((item) => item.id !== selectedItemId) }))
+      setSelectedItemId(null)
+      return
+    }
+
+    if (selectedLayerId) {
+      setRoom((prevRoom) => ({
+        ...prevRoom,
+        collage: { ...prevRoom.collage, layers: prevRoom.collage.layers.filter((layer) => layer.id !== selectedLayerId) },
+      }))
+      setSelectedLayerId(null)
+    }
+  }
+
+  const moveSelectedZ = (mode) => {
+    const selectedType = selectedItemId ? 'item' : selectedLayerId ? 'layer' : null
+    const selectedId = selectedItemId || selectedLayerId
+    if (!selectedType || !selectedId) return
+
+    const maxZ = getMaxZ()
+    const minZ = selectedType === 'item' ? Z_BASE_ITEM : Z_BASE_BACKGROUND
+
+    if (selectedType === 'item') {
+      const selected = room.items.find((item) => item.id === selectedId)
+      if (!selected) return
+      const current = selected.z || Z_BASE_ITEM
+      const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
+      updateItem(selectedId, { z: clamp(target, minZ, MAX_LAYER_Z) })
+      return
+    }
+
+    const selected = room.collage.layers.find((layer) => layer.id === selectedId)
+    if (!selected) return
+    const current = selected.z || Z_BASE_BACKGROUND
+    const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
+    updateLayer(selectedId, { z: clamp(target, minZ, MAX_LAYER_Z) })
+  }
+
+  const addItem = (type) => {
+    const nextItem = {
+      id: randomId(),
+      type,
+      x: 80,
+      y: 80,
+      w: 180,
+      h: 120,
+      content: '',
+      editUrl: '',
+      z: clamp(getMaxZ() + 1, Z_BASE_ITEM, MAX_LAYER_Z),
+      ...defaultItemsByType[type],
+    }
+
+    setRoom((prevRoom) => ({ ...prevRoom, items: [...prevRoom.items, nextItem] }))
+    setSelectedItemId(nextItem.id)
+    setSelectedLayerId(null)
+  }
+
+  const addBackgroundImage = (src, x = 50, y = 60) => {
+    setRoom((prevRoom) => ({
+      ...prevRoom,
+      collage: {
+        ...prevRoom.collage,
+        layers: [
+          ...prevRoom.collage.layers,
+          { id: randomId(), src, x, y, w: 240, h: 180, z: clamp(getMaxZ() + 1, Z_BASE_BACKGROUND, MAX_LAYER_Z) },
+        ],
+      },
+    }))
+  }
 
   useEffect(() => {
     const canvas = drawCanvasRef.current
@@ -137,64 +254,248 @@ function App() {
       ctx.stroke()
       ctx.globalAlpha = 1
     })
-  }, [room.strokes, currentStroke, brushColor, brushSize, brushOpacity])
+  }
 
-  const fitToContent = () => {
-    const boxes = [
-      ...room.items.map((i) => ({ x: i.x, y: i.y, w: i.w, h: i.h })),
-      ...room.strokes.filter((s) => s.points?.length).map((s) => {
-        const xs = s.points.map((p) => p.x)
-        const ys = s.points.map((p) => p.y)
-        return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
-      }),
-    ]
-    if (boxes.length === 0) {
-      const zoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM)
-      setView({ zoom, panX: (viewport.width - WORLD_WIDTH * zoom) / 2, panY: (viewport.height - WORLD_HEIGHT * zoom) / 2 })
+  const startStroke = (event) => {
+    // Solo click izquierdo dibuja. Click derecho y rueda quedan reservados.
+    if (event.button !== 0) return
+    if (drawMode && !handMode) setCurrentStroke([getCanvasPoint(event)])
+  }
+
+  const moveStroke = (event) => {
+    if (drawMode && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
+  }
+
+  const endStroke = () => {
+    if (!drawMode || currentStroke.length < 2) {
+      setCurrentStroke([])
       return
     }
-    const minX = Math.min(...boxes.map((b) => b.x)); const minY = Math.min(...boxes.map((b) => b.y))
-    const maxX = Math.max(...boxes.map((b) => b.x + b.w)); const maxY = Math.max(...boxes.map((b) => b.y + b.h))
-    const contentW = Math.max(1, maxX - minX); const contentH = Math.max(1, maxY - minY)
-    const margin = 120
-    const zoom = clamp(Math.min((viewport.width - margin) / contentW, (viewport.height - margin) / contentH), MIN_ZOOM, MAX_ZOOM)
-    setView({ zoom, panX: viewport.width / 2 - ((minX + maxX) / 2) * zoom, panY: viewport.height / 2 - ((minY + maxY) / 2) * zoom })
+
+    const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
+    setRoom((prevRoom) => ({
+      ...prevRoom,
+      collage: {
+        ...prevRoom.collage,
+        [key]: [...prevRoom.collage[key], { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }],
+      },
+    }))
+    setCurrentStroke([])
+  }
+
+  const undoGlobal = () => {
+    if (undoStackRef.current.length < 2) return
+    const current = undoStackRef.current.pop()
+    const previous = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!previous) return
+    redoStackRef.current.push(current)
+    skipHistoryRef.current = true
+    setRoom(snapshotRoom(previous))
+    requestAnimationFrame(() => { skipHistoryRef.current = false })
+  }
+
+  const redoGlobal = () => {
+    if (redoStackRef.current.length === 0) return
+    const next = redoStackRef.current.pop()
+    if (!next) return
+    undoStackRef.current.push(snapshotRoom(next))
+    skipHistoryRef.current = true
+    setRoom(snapshotRoom(next))
+    requestAnimationFrame(() => { skipHistoryRef.current = false })
   }
 
   useEffect(() => {
     const onKeyDown = (event) => {
       const key = event.key.toLowerCase()
-      const cmd = event.ctrlKey || event.metaKey
-      if (isFormField(event.target)) return
-      if (cmd && key === 'z') { event.preventDefault(); undo(); return }
-      if (cmd && key === 'y') { event.preventDefault(); redo(); return }
-      if (cmd && key === '0') { event.preventDefault(); fitToContent(); return }
-      if (cmd && key === '1') { event.preventDefault(); setView((v) => ({ ...v, zoom: 1 })); return }
-      if (cmd && key === 'a') { event.preventDefault(); setSelectedItemIds(room.items.map((i) => i.id)); setSelectedStrokeIds(room.strokes.map((s) => s.id)); return }
-      if (cmd && key === 'd') { event.preventDefault(); commitRoom((r) => ({ ...r, items: [...r.items, ...r.items.filter((i) => selectedItemIds.includes(i.id)).map((i) => ({ ...i, id: randomId(), x: i.x + 30, y: i.y + 30 }))] })); return }
-      if (key === 'delete' || key === 'backspace') { event.preventDefault(); commitRoom((r) => ({ ...r, items: r.items.filter((i) => !selectedItemIds.includes(i.id)), strokes: r.strokes.filter((s) => !selectedStrokeIds.includes(s.id)) })); return }
-      if (key === 'escape') { setSelectedItemIds([]); setSelectedStrokeIds([]); return }
-      if (key === ' ') { event.preventDefault(); setSpacePressed(true); return }
-      if (key === 'b') setTool('brush')
-      if (key === 'p') setTool('pencil')
-      if (key === 'e') setTool('eraser')
-      if (key === 'v') setTool('move')
-      if (key === 'h') setTool('hand')
+      const activeField = isFormField(document.activeElement)
+      if ((event.ctrlKey || event.metaKey) && key === 'z') {
+        event.preventDefault()
+        undoGlobal()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+        event.preventDefault()
+        redoGlobal()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === '0') {
+        event.preventDefault()
+        const fitZoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM)
+        setView({ zoom: fitZoom, panX: (viewport.width - WORLD_WIDTH * fitZoom) / 2, panY: (viewport.height - WORLD_HEIGHT * fitZoom) / 2 })
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === '1') {
+        event.preventDefault()
+        setView((prev) => ({ ...prev, zoom: 1 }))
+        return
+      }
+      if (!activeField && (key === 'delete' || key === 'backspace')) {
+        event.preventDefault()
+        removeSelectedEntity()
+        return
+      }
+      if (!activeField && key === ' ') {
+        event.preventDefault()
+        setSpacePressed(true)
+        return
+      }
+      if (!activeField && key === 'a') {
+        event.preventDefault()
+        setHandMode((value) => !value)
+        setDrawMode(false)
+        return
+      }
+      if (!activeField && key === 'b') { setDrawMode(true); setHandMode(false); return }
+      if (!activeField && key === 'h') { setHandMode(true); setDrawMode(false); return }
+      if (key === 'escape') {
+        setSelectedItemId(null)
+        setSelectedLayerId(null)
+        setDrawMode(false)
+      }
     }
-    const onKeyUp = (event) => { if (event.key === ' ') setSpacePressed(false) }
+
+    const onKeyUp = (event) => {
+      if (event.key === ' ') setSpacePressed(false)
+    }
+
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
-    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp) }
-  }, [room, selectedItemIds, selectedStrokeIds])
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [selectedItemId, selectedLayerId, currentStroke, drawMode, handMode, viewport.width, viewport.height])
+
+  useEffect(() => {
+    const onPaste = (event) => {
+      if (stage !== 'room' || isFormField(event.target)) return
+      const clipboardItems = event.clipboardData?.items
+      if (!clipboardItems) return
+
+      for (const item of clipboardItems) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (!file) continue
+          const reader = new FileReader()
+          reader.onload = () => addBackgroundImage(reader.result)
+          reader.readAsDataURL(file)
+          continue
+        }
+
+        if (item.type === 'text/plain') {
+          item.getAsString((text) => {
+            const cleanText = text.trim()
+            if (/https?:\/\//.test(cleanText)) addBackgroundImage(cleanText)
+          })
+        }
+      }
+    }
+
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [stage, room, view])
 
   const createRoom = (e) => { e.preventDefault(); setStage('room') }
 
   return stage === 'landing' ? <div className="landing"><form className="card" onSubmit={createRoom}><button type="submit">Entrar a la sala</button></form></div> : (
     <div className="app-shell" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
       <aside>
-        <h3>Herramientas</h3>
-        <div className="toolbar-grid">
-          {['move','hand','pencil','brush','marker','eraser'].map((name) => <button key={name} className={tool===name?'active':''} title={name} onClick={() => setTool(name)}>{name}</button>)}
+        <button className="menu-toggle" onClick={() => setMenuCollapsed((value) => !value)}>
+          {menuCollapsed ? '▶ Abrir menú' : '◀ Ocultar menú'}
+        </button>
+
+        {!menuCollapsed && (
+          <>
+            <h3>{room.name}</h3>
+            <p>{room.description}</p>
+            <button onClick={copyInvite}>{copied ? '¡Copiado!' : 'Copiar invitación'}</button>
+            <hr />
+
+            <h4>Capas</h4>
+            <button onClick={() => moveSelectedZ('forward')}>Traer adelante</button>
+            <button onClick={() => moveSelectedZ('backward')}>Enviar atrás</button>
+            <button onClick={() => moveSelectedZ('front')}>Traer al frente</button>
+            <button onClick={() => moveSelectedZ('back')}>Enviar al fondo</button>
+            <button onClick={() => setShowLayerLabels((value) => !value)}>
+              {showLayerLabels ? 'Ocultar IDs capa' : 'Mostrar IDs capa'}
+            </button>
+            <small>Selecciona primero un objeto/capa para ordenarlo.</small>
+            <hr />
+
+            <h4>Collage fondo</h4>
+            <button onClick={() => { setDrawMode((value) => !value); setHandMode(false) }}>
+              {drawMode ? 'Salir dibujo' : 'Dibujar'}
+            </button>
+            <button onClick={() => { setHandMode((value) => !value); setDrawMode(false) }}>
+              {handMode ? 'Mano activa (A)' : 'Activar mano (A)'}
+            </button>
+            <label>
+              Capa dibujo
+              <select value={drawTarget} onChange={(event) => setDrawTarget(event.target.value)}>
+                <option value="back">Detrás de imágenes</option>
+                <option value="front">Encima de imágenes</option>
+              </select>
+            </label>
+            <label>
+              Color
+              <input type="color" value={brushColor} onChange={(event) => setBrushColor(event.target.value)} />
+            </label>
+            <label>
+              Tamaño
+              <input type="range" min="1" max="30" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
+            </label>
+            <button onClick={() => undoGlobal()}>Deshacer global (Ctrl/Cmd+Z)</button>
+            <button onClick={() => redoGlobal()}>Rehacer global (Ctrl/Cmd+Y)</button>
+            <input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(event) => setPastingUrl(event.target.value)} />
+            <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>
+              Agregar al fondo
+            </button>
+            {selectedLayerId && <button onClick={removeSelectedEntity}>Eliminar capa seleccionada</button>}
+            <button onClick={() => setRoom((prevRoom) => ({ ...prevRoom, collage: { ...prevRoom.collage, layers: [], strokesBack: [], strokesFront: [] } }))}>
+              Limpiar todo el fondo
+            </button>
+            <small>Pega imágenes/GIFs con Ctrl/Cmd+V. Pan: rueda presionada o espacio+drag. Zoom: Ctrl+rueda sobre canvas.</small>
+            <hr />
+
+            <h4>Módulos flotantes</h4>
+            {moduleOptions.map((module) => (
+              <button key={module.type} onClick={() => addItem(module.type)}>{module.label}</button>
+            ))}
+          </>
+        )}
+      </aside>
+
+      <main
+        ref={mainRef}
+        style={{ background: roomGradient }}
+        className={isPanning ? 'is-panning' : ''}
+        onMouseMove={onMainMove}
+        onMouseUp={clearDraggingState}
+        onMouseLeave={clearDraggingState}
+        onWheelCapture={(event) => { if (event.ctrlKey) event.preventDefault() }}
+        onMouseDown={(event) => {
+          const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
+          if (!shouldPan) return
+          event.preventDefault()
+          setIsPanning(true)
+          panDragRef.current = {
+            pointerStartX: event.clientX,
+            pointerStartY: event.clientY,
+            panStartX: view.panX,
+            panStartY: view.panY,
+          }
+        }}
+      >
+        <div className="viewport-tools">
+          <button onClick={() => setView((prevView) => ({ ...prevView, zoom: clamp(prevView.zoom * 1.1, MIN_ZOOM, MAX_ZOOM) }))}>+</button>
+          <button onClick={() => setView((prevView) => ({ ...prevView, zoom: clamp(prevView.zoom * 0.9, MIN_ZOOM, MAX_ZOOM) }))}>-</button>
+          <button onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}>Restablecer vista</button>
+          <button onClick={() => {
+            const fitZoom = clamp(Math.min(viewport.width / WORLD_WIDTH, viewport.height / WORLD_HEIGHT), MIN_ZOOM, MAX_ZOOM)
+            setView({ zoom: fitZoom, panX: (viewport.width - WORLD_WIDTH * fitZoom) / 2, panY: (viewport.height - WORLD_HEIGHT * fitZoom) / 2 })
+          }}>
+            Ajustar a pantalla
+          </button>
         </div>
         <label>Tamaño<input type="range" min="1" max="40" value={brushSize} onChange={(e)=>setBrushSize(Number(e.target.value))} /></label>
         <label>Opacidad<input type="range" min="0.1" max="1" step="0.05" value={brushOpacity} onChange={(e)=>setBrushOpacity(Number(e.target.value))} /></label>
