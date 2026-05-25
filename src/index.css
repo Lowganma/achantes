@@ -20,6 +20,7 @@ main.is-panning { cursor: grabbing; }
 .bg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
 .bg-canvas.front { z-index: 20; }
 .bg-canvas.front.drawing { pointer-events: auto; cursor: crosshair; }
+.item-media { pointer-events: none; }
 .bg-layer { position: absolute; border: 1px solid transparent; z-index: 3; }
 .bg-layer img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 .bg-layer.selected { border-color: #f5e663; box-shadow: 0 0 0 2px #f5e66355; }
@@ -27,7 +28,7 @@ main.is-panning { cursor: grabbing; }
 .resize-handle { position: absolute; width: 12px; height: 12px; border-radius: 2px; right: -6px; bottom: -6px; background: #f5e663; padding: 0; display: none; }
 .bg-layer.selected .resize-handle, .item.selected .resize-handle { display: block; }
 .item { position: absolute; padding: .5rem; border: 1px solid transparent; background: rgba(0,0,0,.35); border-radius: 10px; user-select: none; }
-.item.selected { border-color: #f5e663; box-shadow: 0 0 0 2px #f5e66355; }
+.item.selected { border-color: #f5e663; }
 .item img { width: 100%; border-radius: 8px; display: block; }
 .item-postit { background: #ffe663; color: #2f1d00; }
 .item-signwall { background: rgba(255,255,255,.92); color: #1a1328; }

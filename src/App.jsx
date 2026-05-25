@@ -11,7 +11,8 @@ const MAX_ZOOM = 3
 
 // Z-index lógico por familias
 const Z_BASE_BACKGROUND = 1
-const Z_BASE_ITEM = 2000
+const Z_BASE_ITEM = 2
+const MAX_LAYER_Z = 50
 
 const moduleOptions = [
   { type: 'text', label: 'Texto decorativo' },
@@ -71,6 +72,7 @@ function App() {
   const [pastingUrl, setPastingUrl] = useState('')
   const [menuCollapsed, setMenuCollapsed] = useState(false)
   const [showLayerLabels, setShowLayerLabels] = useState(false)
+  const [handMode, setHandMode] = useState(false)
 
   // =========================
   // Dibujo
@@ -123,7 +125,11 @@ function App() {
         const nextZoom = clamp(prev.zoom * (event.deltaY > 0 ? 0.9 : 1.1), MIN_ZOOM, MAX_ZOOM)
         const worldX = (cursorX - prev.panX) / prev.zoom
         const worldY = (cursorY - prev.panY) / prev.zoom
-        return { zoom: nextZoom, panX: cursorX - worldX * nextZoom, panY: cursorY - worldY * nextZoom }
+        const rawPanX = cursorX - worldX * nextZoom
+        const rawPanY = cursorY - worldY * nextZoom
+        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * nextZoom)
+        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * nextZoom)
+        return { zoom: nextZoom, panX: clamp(rawPanX, minPanX, 0), panY: clamp(rawPanY, minPanY, 0) }
       })
     }
     host.addEventListener('wheel', onNativeWheel, { passive: false })
@@ -161,6 +167,12 @@ function App() {
   const getMaxZ = () => {
     const layerMax = room.collage.layers.reduce((max, l) => Math.max(max, l.z || Z_BASE_BACKGROUND), Z_BASE_BACKGROUND)
     const itemMax = room.items.reduce((max, it) => Math.max(max, it.z || Z_BASE_ITEM), Z_BASE_ITEM)
+    return clamp(Math.max(layerMax, itemMax), Z_BASE_BACKGROUND, MAX_LAYER_Z)
+  }
+
+  const getMaxZ = () => {
+    const layerMax = room.collage.layers.reduce((max, l) => Math.max(max, l.z || Z_BASE_BACKGROUND), Z_BASE_BACKGROUND)
+    const itemMax = room.items.reduce((max, it) => Math.max(max, it.z || Z_BASE_ITEM), Z_BASE_ITEM)
     return Math.max(layerMax, itemMax)
   }
   const updateItem = (id, patch) => setRoom((p) => ({ ...p, items: p.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }))
@@ -190,8 +202,8 @@ function App() {
       const selected = room.items.find((it) => it.id === selectedId)
       if (!selected) return
       const current = selected.z || Z_BASE_ITEM
-      const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? current - 1 : mode === 'forward' ? current + 1 : current - 1
-      updateItem(selectedId, { z: Math.max(minZ, target) })
+      const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
+      updateItem(selectedId, { z: clamp(target, minZ, MAX_LAYER_Z) })
       return
     }
 
@@ -199,12 +211,12 @@ function App() {
     if (!selected) return
     const current = selected.z || Z_BASE_BACKGROUND
     const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
-    updateLayer(selectedId, { z: Math.max(minZ, target) })
+    updateLayer(selectedId, { z: clamp(target, minZ, MAX_LAYER_Z) })
   }
 
   const addItem = (type) => {
     const nextItem = {
-      ...{ id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '', editUrl: '', z: getMaxZ() + 1 },
+      ...{ id: randomId(), type, x: 80, y: 80, w: 180, h: 120, content: '', editUrl: '', z: clamp(getMaxZ() + 1, Z_BASE_ITEM, MAX_LAYER_Z) },
       ...defaultItemsByType[type],
     }
     setRoom((p) => ({ ...p, items: [...p.items, nextItem] }))
@@ -216,7 +228,7 @@ function App() {
   const addBackgroundImage = (src, x = 50, y = 60) => {
     setRoom((p) => ({
       ...p,
-      collage: { ...p.collage, layers: [...p.collage.layers, { id: randomId(), src, x, y, w: 240, h: 180, z: getMaxZ() + 1 }] },
+      collage: { ...p.collage, layers: [...p.collage.layers, { id: randomId(), src, x, y, w: 240, h: 180, z: clamp(getMaxZ() + 1, Z_BASE_ITEM, MAX_LAYER_Z) }] },
     }))
   }
 
@@ -238,7 +250,7 @@ function App() {
     })
   }
 
-  const startStroke = (event) => drawMode && setCurrentStroke([getCanvasPoint(event)])
+  const startStroke = (event) => drawMode && !handMode && setCurrentStroke([getCanvasPoint(event)])
   const moveStroke = (event) => drawMode && currentStroke.length > 0 && setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   const endStroke = () => {
     if (!drawMode || currentStroke.length < 2) return setCurrentStroke([])
@@ -265,6 +277,8 @@ function App() {
       if ((event.ctrlKey || event.metaKey) && key === 'z') return event.preventDefault(), undoStroke()
       if (!activeField && (key === 'delete' || key === 'backspace')) return event.preventDefault(), removeSelectedEntity()
       if (!activeField && key === ' ') return event.preventDefault(), setSpacePressed(true)
+      if (!activeField && key === 'a') return event.preventDefault(), setHandMode((v) => !v), setDrawMode(false)
+      if (key === 'escape') return setSelectedItemId(null), setSelectedLayerId(null), setDrawMode(false)
     }
     const onKeyUp = (event) => event.key === ' ' && setSpacePressed(false)
     window.addEventListener('keydown', onKeyDown)
@@ -301,7 +315,13 @@ function App() {
 
     if (panDragRef.current) {
       const { pointerStartX, pointerStartY, panStartX, panStartY } = panDragRef.current
-      setView((p) => ({ ...p, panX: panStartX + (event.clientX - pointerStartX), panY: panStartY + (event.clientY - pointerStartY) }))
+      setView((p) => {
+        const nextPanX = panStartX + (event.clientX - pointerStartX)
+        const nextPanY = panStartY + (event.clientY - pointerStartY)
+        const minPanX = Math.min(0, viewport.width - WORLD_WIDTH * p.zoom)
+        const minPanY = Math.min(0, viewport.height - WORLD_HEIGHT * p.zoom)
+        return { ...p, panX: clamp(nextPanX, minPanX, 0), panY: clamp(nextPanY, minPanY, 0) }
+      })
       return
     }
 
@@ -367,7 +387,7 @@ function App() {
           <button onClick={() => setShowLayerLabels((v) => !v)}>{showLayerLabels ? 'Ocultar IDs capa' : 'Mostrar IDs capa'}</button>
           <small>Selecciona primero un objeto/capa para ordenarlo.</small>
           <hr />
-          <h4>Collage fondo</h4><button onClick={() => setDrawMode((value) => !value)}>{drawMode ? 'Salir dibujo' : 'Dibujar'}</button>
+          <h4>Collage fondo</h4><button onClick={() => { setDrawMode((value) => !value); setHandMode(false) }}>{drawMode ? 'Salir dibujo' : 'Dibujar'}</button><button onClick={() => { setHandMode((v) => !v); setDrawMode(false) }}>{handMode ? 'Mano activa (A)' : 'Activar mano (A)'}</button>
           <label>Capa dibujo<select value={drawTarget} onChange={(e) => setDrawTarget(e.target.value)}><option value="back">Detrás de imágenes</option><option value="front">Encima de imágenes</option></select></label>
           <label>Color <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} /></label>
           <label>Tamaño <input type="range" min="1" max="30" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} /></label>
@@ -385,8 +405,9 @@ function App() {
         onMouseMove={onMainMove}
         onMouseUp={clearDraggingState}
         onMouseLeave={clearDraggingState}
+        onWheelCapture={(event) => { if (event.ctrlKey) event.preventDefault() }}
         onMouseDown={(event) => {
-          const shouldPan = event.button === 1 || (event.button === 0 && spacePressed)
+          const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
           if (!shouldPan) return
           event.preventDefault()
           setIsPanning(true)
@@ -397,8 +418,8 @@ function App() {
         <div className={`design-surface ${isPanning ? 'panning' : ''}`} style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}>
           <canvas ref={backCanvasRef} className="bg-canvas" />
           {room.collage.layers.map((layer) => <div key={layer.id} className={`bg-layer ${selectedLayerId === layer.id ? 'selected' : ''}`} style={{ left: layer.x, top: layer.y, width: layer.w, height: layer.h, zIndex: layer.z || Z_BASE_BACKGROUND }} onMouseDown={() => { setSelectedLayerId(layer.id); setSelectedItemId(null); if (!drawMode) setDragLayerId(layer.id) }}><img src={layer.src} alt="layer" draggable={false} />{showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}<button className="resize-handle" onMouseDown={(e) => { e.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" /></div>)}
-          <canvas ref={frontCanvasRef} className={`bg-canvas front ${drawMode ? 'drawing' : ''}`} onMouseDown={startStroke} onMouseMove={moveStroke} onMouseUp={endStroke} onMouseLeave={endStroke} />
-          {room.items.map((item) => <div key={item.id} className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h, zIndex: item.z || Z_BASE_ITEM }} onMouseDown={() => { setSelectedItemId(item.id); setSelectedLayerId(null); if (!drawMode) setDraggingId(item.id) }}>{item.type === 'gif' && <img src={item.content} alt={item.type} draggable={false} onError={() => updateItem(item.id, { loadError: 'No se pudo cargar este GIF.' })} onLoad={() => item.loadError && updateItem(item.id, { loadError: '' })} />}
+          <canvas ref={frontCanvasRef} className={`bg-canvas front ${drawMode && !handMode ? 'drawing' : ''}`} onMouseDown={startStroke} onMouseMove={moveStroke} onMouseUp={endStroke} onMouseLeave={endStroke} />
+          {room.items.map((item) => <div key={item.id} className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`} style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h, zIndex: item.z || Z_BASE_ITEM }} onMouseDown={() => { setSelectedItemId(item.id); setSelectedLayerId(null); if (!drawMode) setDraggingId(item.id) }}>{item.type === 'gif' && <img className="item-media" src={item.content} alt={item.type} draggable={false} onError={() => updateItem(item.id, { loadError: 'No se pudo cargar este GIF.' })} onLoad={() => item.loadError && updateItem(item.id, { loadError: '' })} />}
             {showLayerLabels && <span className="layer-badge">Z:{item.z || Z_BASE_ITEM}</span>}
             {item.type === 'gif' && <div className="gif-controls" onMouseDown={(e) => e.stopPropagation()}><input value={item.editUrl || ''} onChange={(e) => updateItem(item.id, { editUrl: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && applyGifUrl(item.id)} placeholder="URL GIF" /><button type="button" onClick={() => applyGifUrl(item.id)}>Aplicar</button></div>}
             {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
