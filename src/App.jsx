@@ -94,6 +94,8 @@ function App() {
   const frontCanvasRef = useRef(null)
   const drawTargetRef = useRef(drawTarget)
   const panDragRef = useRef(null)
+  const undoStackRef = useRef([])
+  const redoStackRef = useRef([])
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -276,6 +278,7 @@ function App() {
   }
 
   const startStroke = (event) => {
+    if (event.button !== 0) return
     if (drawMode && !handMode) setCurrentStroke([getCanvasPoint(event)])
   }
 
@@ -290,21 +293,44 @@ function App() {
     }
 
     const key = drawTargetRef.current === 'back' ? 'strokesBack' : 'strokesFront'
+    const stroke = { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }
     setRoom((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
-        [key]: [...prevRoom.collage[key], { id: randomId(), color: brushColor, size: brushSize, points: currentStroke }],
+        [key]: [...prevRoom.collage[key], stroke],
       },
     }))
+    undoStackRef.current.push({ target: key, stroke })
+    redoStackRef.current = []
     setCurrentStroke([])
   }
 
-  const undoStroke = (target = drawTargetRef.current) => {
-    const key = target === 'back' ? 'strokesBack' : 'strokesFront'
+  const undoStroke = () => {
+    const lastEntry = undoStackRef.current.pop()
+    if (!lastEntry) return
+    const { target, stroke } = lastEntry
+    redoStackRef.current.push(lastEntry)
     setRoom((prevRoom) => ({
       ...prevRoom,
-      collage: { ...prevRoom.collage, [key]: prevRoom.collage[key].slice(0, -1) },
+      collage: {
+        ...prevRoom.collage,
+        [target]: prevRoom.collage[target].filter((item) => item.id !== stroke.id),
+      },
+    }))
+  }
+
+  const redoStroke = () => {
+    const nextEntry = redoStackRef.current.pop()
+    if (!nextEntry) return
+    const { target, stroke } = nextEntry
+    undoStackRef.current.push(nextEntry)
+    setRoom((prevRoom) => ({
+      ...prevRoom,
+      collage: {
+        ...prevRoom.collage,
+        [target]: [...prevRoom.collage[target], stroke],
+      },
     }))
   }
 
@@ -321,7 +347,13 @@ function App() {
       const activeField = isFormField(document.activeElement)
       if ((event.ctrlKey || event.metaKey) && key === 'z') {
         event.preventDefault()
-        undoStroke()
+        if (event.shiftKey) redoStroke()
+        else undoStroke()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && key === 'y') {
+        event.preventDefault()
+        redoStroke()
         return
       }
       if (!activeField && (key === 'delete' || key === 'backspace')) {
@@ -572,7 +604,6 @@ function App() {
         onMouseMove={onMainMove}
         onMouseUp={clearDraggingState}
         onMouseLeave={clearDraggingState}
-        onWheelCapture={(event) => { if (event.ctrlKey) event.preventDefault() }}
         onMouseDown={(event) => {
           const shouldPan = event.button === 1 || (event.button === 0 && (spacePressed || handMode))
           if (!shouldPan) return
