@@ -111,6 +111,7 @@ function App() {
   const lastPointerRef = useRef({ x: 60, y: 60 })
   const interactionStartRef = useRef(null)
   const interactionDirtyRef = useRef(false)
+  const strokeSessionRef = useRef(0)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -304,14 +305,18 @@ function App() {
 
   const startStroke = (event) => {
     if (event.button !== 0) return
-    if (drawMode && !handMode) setCurrentStroke([getCanvasPoint(event)])
+    if (drawMode && !handMode) {
+      strokeSessionRef.current += 1
+      setCurrentStroke([getCanvasPoint(event)])
+    }
   }
 
   const moveStroke = (event) => {
     if (drawMode && currentStroke.length > 0) setCurrentStroke((prev) => [...prev, getCanvasPoint(event)])
   }
 
-  const endStroke = () => {
+  const endStroke = (sessionId = strokeSessionRef.current) => {
+    if (sessionId !== strokeSessionRef.current) return
     if (!drawMode || currentStroke.length < 2) {
       setCurrentStroke([])
       return
@@ -329,6 +334,7 @@ function App() {
     undoStackRef.current.push({ target: key, stroke })
     redoStackRef.current = []
     setCurrentStroke([])
+    strokeSessionRef.current += 1
   }
 
   const undoStroke = () => {
@@ -367,12 +373,14 @@ function App() {
       const key = event.key.toLowerCase()
       const activeField = isFormField(document.activeElement)
       if ((event.ctrlKey || event.metaKey) && key === 'z') {
+        if (event.repeat) return
         event.preventDefault()
         if (event.shiftKey) redoStroke()
         else undoStroke()
         return
       }
       if ((event.ctrlKey || event.metaKey) && key === 'y') {
+        if (event.repeat) return
         event.preventDefault()
         redoStroke()
         return
@@ -512,7 +520,6 @@ function App() {
     setResizeItemId(null)
     setIsPanning(false)
     panDragRef.current = null
-    endStroke()
   }
 
   const createRoom = (event) => {
@@ -693,8 +700,8 @@ function App() {
             className={`bg-canvas front ${drawMode && !handMode ? 'drawing' : ''}`}
             onMouseDown={startStroke}
             onMouseMove={moveStroke}
-            onMouseUp={endStroke}
-            onMouseLeave={endStroke}
+            onMouseUp={() => endStroke(strokeSessionRef.current)}
+            onMouseLeave={() => endStroke(strokeSessionRef.current)}
           />
 
           {room.items.map((item) => (
