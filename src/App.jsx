@@ -98,6 +98,8 @@ function App() {
   const redoStackRef = useRef([])
   const skipHistoryRef = useRef(false)
   const lastPointerRef = useRef({ x: 60, y: 60 })
+  const interactionStartRef = useRef(null)
+  const interactionDirtyRef = useRef(false)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
 
@@ -182,21 +184,21 @@ function App() {
     return clamp(Math.max(layerMax, itemMax), Z_BASE_BACKGROUND, MAX_LAYER_Z)
   }
 
-  const updateItem = (id, patch) => {
+  const updateItem = (id, patch, options) => {
     setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       items: prevRoom.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-    }))
+    }), options)
   }
 
-  const updateLayer = (id, patch) => {
+  const updateLayer = (id, patch, options) => {
     setRoomWithHistory((prevRoom) => ({
       ...prevRoom,
       collage: {
         ...prevRoom.collage,
         layers: prevRoom.collage.layers.map((layer) => (layer.id === id ? { ...layer, ...patch } : layer)),
       },
-    }))
+    }), options)
   }
 
   const removeSelectedEntity = () => {
@@ -443,44 +445,54 @@ function App() {
     }
 
     if (draggingId && !drawMode) {
+      interactionDirtyRef.current = true
       updateItem(draggingId, {
         x: clamp(point.x - 60, 0, WORLD_WIDTH - 120),
         y: clamp(point.y - 24, 0, WORLD_HEIGHT - 60),
-      })
+      }, { recordHistory: false })
     }
 
     if (dragLayerId) {
       const layer = room.collage.layers.find((entry) => entry.id === dragLayerId)
       if (layer) {
+        interactionDirtyRef.current = true
         updateLayer(dragLayerId, {
           x: clamp(point.x - layer.w / 2, 0, WORLD_WIDTH - layer.w),
           y: clamp(point.y - layer.h / 2, 0, WORLD_HEIGHT - layer.h),
-        })
+        }, { recordHistory: false })
       }
     }
 
     if (resizeItemId) {
       const item = room.items.find((entry) => entry.id === resizeItemId)
       if (item) {
+        interactionDirtyRef.current = true
         updateItem(resizeItemId, {
           w: clamp(point.x - item.x, 80, WORLD_WIDTH - item.x),
           h: clamp(point.y - item.y, 80, WORLD_HEIGHT - item.y),
-        })
+        }, { recordHistory: false })
       }
     }
 
     if (resizeLayerId) {
       const layer = room.collage.layers.find((entry) => entry.id === resizeLayerId)
       if (layer) {
+        interactionDirtyRef.current = true
         updateLayer(resizeLayerId, {
           w: clamp(point.x - layer.x, 60, WORLD_WIDTH - layer.x),
           h: clamp(point.y - layer.y, 60, WORLD_HEIGHT - layer.y),
-        })
+        }, { recordHistory: false })
       }
     }
   }
 
   const clearDraggingState = () => {
+    if (interactionStartRef.current && interactionDirtyRef.current) {
+      undoStackRef.current.push(interactionStartRef.current)
+      redoStackRef.current = []
+    }
+    interactionStartRef.current = null
+    interactionDirtyRef.current = false
     setDraggingId(null)
     setDragLayerId(null)
     setResizeLayerId(null)
@@ -650,12 +662,16 @@ function App() {
               onMouseDown={() => {
                 setSelectedLayerId(layer.id)
                 setSelectedItemId(null)
-                if (!drawMode && !handMode) setDragLayerId(layer.id)
+                if (!drawMode && !handMode) {
+                  interactionStartRef.current = room
+                  interactionDirtyRef.current = false
+                  setDragLayerId(layer.id)
+                }
               }}
             >
               <img src={layer.src} alt="layer" draggable={false} />
               {showLayerLabels && <span className="layer-badge">Z:{layer.z || Z_BASE_BACKGROUND}</span>}
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeLayerId(layer.id) }} aria-label="resize" />
+              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); interactionStartRef.current = room; interactionDirtyRef.current = false; setResizeLayerId(layer.id) }} aria-label="resize" />
             </div>
           ))}
 
@@ -676,7 +692,11 @@ function App() {
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
-                if (!drawMode && !handMode) setDraggingId(item.id)
+                if (!drawMode && !handMode) {
+                  interactionStartRef.current = room
+                  interactionDirtyRef.current = false
+                  setDraggingId(item.id)
+                }
               }}
             >
               {item.type === 'gif' && item.content && (
@@ -711,7 +731,7 @@ function App() {
               {item.type === 'dice' && <button onClick={() => updateItem(item.id, { content: `🎲 ${Math.floor(Math.random() * 6) + 1}` })}>{item.content}</button>}
               {item.type === 'signwall' && <textarea value={item.content} onChange={(event) => updateItem(item.id, { content: event.target.value })} />}
 
-              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); setResizeItemId(item.id) }} aria-label="resize" />
+              <button className="resize-handle" onMouseDown={(event) => { event.stopPropagation(); interactionStartRef.current = room; interactionDirtyRef.current = false; setResizeItemId(item.id) }} aria-label="resize" />
             </div>
           ))}
         </div>
