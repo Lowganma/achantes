@@ -994,7 +994,7 @@ function App() {
             <div
               key={item.id}
               className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`}
-              style={{ left: item.x, top: item.y, width: item.w, height: item.h, zIndex: item.z || Z_BASE_ITEM }}
+              style={{ left: item.x, top: item.y, width: item.w, height: item.collapsed && item.type === 'music' ? 64 : item.h, zIndex: item.z || Z_BASE_ITEM }}
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
@@ -1033,15 +1033,16 @@ function App() {
 
               {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
               {item.type === 'music' && (
-                <div className={`music-module ${item.collapsed ? 'collapsed' : ''}`} onMouseDown={(event) => event.stopPropagation()}>
-                  <div className="music-module-header">
+                <div className={`music-module ${item.collapsed ? 'collapsed' : ''}`}>
+                  <div className="music-module-header" title="Arrastra desde aquí para mover">
                     <strong>{item.title || 'Radio del Achante'}</strong>
-                    <button type="button" onClick={() => updateItem(item.id, { collapsed: !item.collapsed })}>
+                    <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => updateItem(item.id, { collapsed: !item.collapsed })}>
                       {item.collapsed ? 'Expandir' : 'Minimizar'}
                     </button>
                   </div>
                   <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
                   <input
+                        onMouseDown={(event) => event.stopPropagation()}
                         className={item.collapsed ? 'is-hidden' : ''}
                         value={item.editUrl || item.url || ''}
                         onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
@@ -1049,13 +1050,13 @@ function App() {
                         placeholder="Pega URL de YouTube"
                       />
                       <div className={`music-module-actions ${item.collapsed ? 'is-hidden' : ''}`}>
-                        <button type="button" onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
-                        <button type="button" onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
+                        <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
+                        <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
                           {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
                         </button>
                       </div>
                   {item.content ? (
-                        <div className="music-player-shell">
+                        <div className="music-player-shell" onMouseDown={(event) => event.stopPropagation()}>
                           <iframe
                             title={`music-${item.id}`}
                             src={item.content}
