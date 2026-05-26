@@ -1033,32 +1033,43 @@ function App() {
 
               {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
               {item.type === 'music' && (
-                <div className="music-module" onMouseDown={(event) => event.stopPropagation()}>
-                  <strong>{item.title || 'Radio del Achante'}</strong>
-                  <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
-                  <input
-                    value={item.editUrl || item.url || ''}
-                    onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
-                    onKeyDown={(event) => event.key === 'Enter' && setMusicFromUrl(item)}
-                    placeholder="Pega URL de YouTube"
-                  />
-                  <div className="music-module-actions">
-                    <button type="button" onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
-                    <button type="button" onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
-                      {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
+                <div className={`music-module ${item.collapsed ? 'collapsed' : ''}`} onMouseDown={(event) => event.stopPropagation()}>
+                  <div className="music-module-header">
+                    <strong>{item.title || 'Radio del Achante'}</strong>
+                    <button type="button" onClick={() => updateItem(item.id, { collapsed: !item.collapsed })}>
+                      {item.collapsed ? 'Expandir' : 'Minimizar'}
                     </button>
                   </div>
-                  {item.content ? (
-                    <iframe
-                      title={`music-${item.id}`}
-                      src={item.content}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      referrerPolicy="strict-origin-when-cross-origin"
-                      sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-                      allowFullScreen
-                    />
-                  ) : (
-                    <p className="music-placeholder">La Radio del Achante está lista. Pega un link de YouTube 🎧</p>
+                  <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
+                  {!item.collapsed && (
+                    <>
+                      <input
+                        value={item.editUrl || item.url || ''}
+                        onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
+                        onKeyDown={(event) => event.key === 'Enter' && setMusicFromUrl(item)}
+                        placeholder="Pega URL de YouTube"
+                      />
+                      <div className="music-module-actions">
+                        <button type="button" onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
+                        <button type="button" onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
+                          {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
+                        </button>
+                      </div>
+                      {item.content ? (
+                        <div className="music-player-shell">
+                          <iframe
+                            title={`music-${item.id}`}
+                            src={item.content}
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            referrerPolicy="strict-origin-when-cross-origin"
+                            sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+                            allowFullScreen
+                          />
+                        </div>
+                      ) : (
+                        <p className="music-placeholder">La Radio del Achante está lista. Pega un link de YouTube 🎧</p>
+                      )}
+                    </>
                   )}
                 </div>
               )}

@@ -40,6 +40,7 @@ export const defaultItemsByType = {
     editUrl: '',
     w: 320,
     h: 220,
+    collapsed: false,
   },
 }
 
@@ -78,6 +79,7 @@ export const normalizeModuleItem = ({ item, clamp, worldWidth, worldHeight, base
     videoId: typeof item.videoId === 'string' ? item.videoId : (typeDefaults.videoId || ''),
     status: item.status === 'playing' ? 'playing' : 'paused',
     volume: Number.isFinite(Number(item.volume)) ? Math.max(0, Math.min(100, Number(item.volume))) : (typeDefaults.volume ?? 100),
+    collapsed: item.collapsed === true,
     version: 1,
   }
 }
