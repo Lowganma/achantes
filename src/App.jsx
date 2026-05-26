@@ -16,6 +16,7 @@ const MAX_MENU_WIDTH = 460
 const MAX_HISTORY_ENTRIES = 40
 const MAX_PASTE_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PASTE_IMAGE_DIMENSION = 400
+const MAX_BACKGROUND_IMAGE_BYTES = 4 * 1024 * 1024
 
 // Z-index lógico por familias
 const Z_BASE_BACKGROUND = 1
@@ -109,6 +110,31 @@ const normalizeGifUrl = (rawUrl = '') => {
   const giphyMatch = value.match(/giphy\.com\/(?:gifs|media)\/[^/]*-([a-zA-Z0-9]+)$/i)
   if (giphyMatch) return `https://media.giphy.com/media/${giphyMatch[1]}/giphy.gif`
   return value
+}
+
+
+const getYouTubeVideoId = (rawUrl = '') => {
+  const value = rawUrl.trim()
+  if (!value) return ''
+
+  try {
+    const parsed = new URL(value)
+    if (parsed.hostname.includes('youtu.be')) return parsed.pathname.slice(1)
+    if (parsed.hostname.includes('youtube.com')) {
+      if (parsed.pathname === '/watch') return parsed.searchParams.get('v') || ''
+      if (parsed.pathname.startsWith('/embed/')) return parsed.pathname.split('/embed/')[1]?.split('/')[0] || ''
+      if (parsed.pathname.startsWith('/shorts/')) return parsed.pathname.split('/shorts/')[1]?.split('/')[0] || ''
+    }
+  } catch {
+    return ''
+  }
+
+  return ''
+}
+
+const getYouTubeEmbedUrl = (videoId = '') => {
+  if (!videoId) return ''
+  return `https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1&enablejsapi=1`
 }
 
 function App() {
@@ -331,6 +357,49 @@ function App() {
     const current = selected.z || Z_BASE_BACKGROUND
     const target = mode === 'front' ? maxZ + 1 : mode === 'back' ? minZ : mode === 'forward' ? current + 1 : current - 1
     updateLayer(selectedId, { z: clamp(target, minZ, MAX_LAYER_Z) })
+  }
+
+  const applyBackgroundImageFromFile = (file) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      notify('Selecciona un archivo de imagen válido para el fondo.')
+      return
+    }
+    if (file.size > MAX_BACKGROUND_IMAGE_BYTES) {
+      notify('La imagen pesa demasiado para guardarla en localStorage. Usa una imagen más ligera (máx. 4 MB).')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const nextBackground = typeof reader.result === 'string' ? reader.result : ''
+      if (!nextBackground) {
+        notify('No se pudo leer la imagen seleccionada.')
+        return
+      }
+      setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: nextBackground }))
+      notify('Fondo local aplicado ✅')
+    }
+    reader.onerror = () => notify('No se pudo leer la imagen seleccionada.')
+    reader.readAsDataURL(file)
+  }
+
+  const setMusicFromUrl = (item) => {
+    const rawUrl = (item.editUrl || '').trim()
+    const videoId = getYouTubeVideoId(rawUrl)
+    if (!videoId) {
+      updateItem(item.id, { status: 'paused' })
+      notify('URL de YouTube inválida. Usa un link de youtube.com o youtu.be.')
+      return
+    }
+    updateItem(item.id, {
+      provider: 'youtube',
+      url: rawUrl,
+      videoId,
+      content: getYouTubeEmbedUrl(videoId),
+      title: item.title || 'Música de la sala',
+      status: 'paused',
+    })
   }
 
   const addItem = (type) => {
@@ -809,7 +878,11 @@ function App() {
             <button onClick={() => undoStroke()}>Deshacer trazo (Ctrl/Cmd+Z)</button>
             <h4>Fondo de sala</h4>
             <input placeholder="URL de imagen de fondo" value={room.backgroundImageUrl || ''} onChange={(event) => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: event.target.value.trim() }), { recordHistory: false })} />
-            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: (prevRoom.backgroundImageUrl || '').trim() }))}>Aplicar fondo</button>
+            <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: (prevRoom.backgroundImageUrl || '').trim() }))}>Aplicar fondo por URL</button>
+            <label>
+              Subir imagen de fondo desde mi PC
+              <input type="file" accept="image/*" onChange={(event) => applyBackgroundImageFromFile(event.target.files?.[0])} />
+            </label>
             <button onClick={() => setRoomWithHistory((prevRoom) => ({ ...prevRoom, backgroundImageUrl: '' }))}>Quitar fondo de sala</button>
             <input placeholder="URL imagen o GIF" value={pastingUrl} onChange={(event) => setPastingUrl(event.target.value)} />
             <button onClick={() => pastingUrl.trim() && addBackgroundImage(pastingUrl.trim(), 60, 60)}>
@@ -959,6 +1032,47 @@ function App() {
               )}
 
               {item.type === 'gif' && item.loadError && <small className="gif-error">{item.loadError}</small>}
+              {item.type === 'music' && (
+                <div className={`music-module ${item.collapsed ? 'collapsed' : ''}`} onMouseDown={(event) => event.stopPropagation()}>
+                  <div className="music-module-header">
+                    <strong>{item.title || 'Radio del Achante'}</strong>
+                    <button type="button" onClick={() => updateItem(item.id, { collapsed: !item.collapsed })}>
+                      {item.collapsed ? 'Expandir' : 'Minimizar'}
+                    </button>
+                  </div>
+                  <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
+                  {!item.collapsed && (
+                    <>
+                      <input
+                        value={item.editUrl || item.url || ''}
+                        onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
+                        onKeyDown={(event) => event.key === 'Enter' && setMusicFromUrl(item)}
+                        placeholder="Pega URL de YouTube"
+                      />
+                      <div className="music-module-actions">
+                        <button type="button" onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
+                        <button type="button" onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
+                          {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
+                        </button>
+                      </div>
+                      {item.content ? (
+                        <div className="music-player-shell">
+                          <iframe
+                            title={`music-${item.id}`}
+                            src={item.content}
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            referrerPolicy="strict-origin-when-cross-origin"
+                            sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+                            allowFullScreen
+                          />
+                        </div>
+                      ) : (
+                        <p className="music-placeholder">La Radio del Achante está lista. Pega un link de YouTube 🎧</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
               {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(event) => updateItem(item.id, { content: event.target.textContent })}>{item.content}</h5>}
               {item.type === 'postit' && <textarea value={item.content} onChange={(event) => updateItem(item.id, { content: event.target.value })} />}
               {item.type === 'player' && <a href={item.content} target="_blank" rel="noreferrer">Abrir reproductor</a>}
