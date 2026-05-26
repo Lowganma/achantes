@@ -51,3 +51,12 @@ small { opacity: .8; }
 .crop-rect { position: absolute; border: 1px dashed #f5e663; background: #f5e66322; z-index: 25; pointer-events: none; }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 500; background: #2c1d4acc; border: 1px solid #b58cff; color: #fff; padding: .65rem .9rem; border-radius: 10px; max-width: 360px; }
+.music-module { display: grid; gap: .45rem; }
+.music-module strong { color: #ffe663; letter-spacing: .02em; }
+.music-module small { opacity: .85; }
+.music-module input { width: 100%; font-size: .82rem; }
+.music-module iframe { width: 100%; min-height: 140px; border: 0; border-radius: 8px; background: #000; }
+.music-module-actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+.music-module-actions button { padding: .35rem .5rem; font-size: .78rem; border-radius: 8px; }
+.music-placeholder { margin: 0; font-size: .85rem; opacity: .85; }
+.item-music { background: rgba(18, 10, 32, 0.86); border: 1px solid #8f6bd8; }
