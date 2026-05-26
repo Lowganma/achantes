@@ -11,7 +11,7 @@ const WORLD_HEIGHT = 4000
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 3
 const MENU_WIDTH_KEY = 'achantes-menu-width-v1'
-const MIN_MENU_WIDTH = 240
+const MIN_MENU_WIDTH = 180
 const MAX_MENU_WIDTH = 460
 const MAX_HISTORY_ENTRIES = 40
 const MAX_PASTE_IMAGE_BYTES = 8 * 1024 * 1024
@@ -994,7 +994,7 @@ function App() {
             <div
               key={item.id}
               className={`item item-${item.type} ${selectedItemId === item.id ? 'selected' : ''}`}
-              style={{ left: item.x, top: item.y, width: item.w, minHeight: item.h, zIndex: item.z || Z_BASE_ITEM }}
+              style={{ left: item.x, top: item.y, width: item.w, height: item.h, zIndex: item.z || Z_BASE_ITEM }}
               onMouseDown={() => {
                 setSelectedItemId(item.id)
                 setSelectedLayerId(null)
@@ -1041,21 +1041,20 @@ function App() {
                     </button>
                   </div>
                   <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
-                  {!item.collapsed && (
-                    <>
-                      <input
+                  <input
+                        className={item.collapsed ? 'is-hidden' : ''}
                         value={item.editUrl || item.url || ''}
                         onChange={(event) => updateItem(item.id, { editUrl: event.target.value })}
                         onKeyDown={(event) => event.key === 'Enter' && setMusicFromUrl(item)}
                         placeholder="Pega URL de YouTube"
                       />
-                      <div className="music-module-actions">
+                      <div className={`music-module-actions ${item.collapsed ? 'is-hidden' : ''}`}>
                         <button type="button" onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
                         <button type="button" onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
                           {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
                         </button>
                       </div>
-                      {item.content ? (
+                  {item.content ? (
                         <div className="music-player-shell">
                           <iframe
                             title={`music-${item.id}`}
@@ -1067,10 +1066,8 @@ function App() {
                           />
                         </div>
                       ) : (
-                        <p className="music-placeholder">La Radio del Achante está lista. Pega un link de YouTube 🎧</p>
+                        <p className={`music-placeholder ${item.collapsed ? 'is-hidden' : ''}`}>La Radio del Achante está lista. Pega un link de YouTube 🎧</p>
                       )}
-                    </>
-                  )}
                 </div>
               )}
               {item.type === 'text' && <h5 contentEditable suppressContentEditableWarning onBlur={(event) => updateItem(item.id, { content: event.target.textContent })}>{item.content}</h5>}
