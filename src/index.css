@@ -8,10 +8,10 @@ header p { margin: 0; text-align: center; opacity: .85; }
 input, textarea, select { background: #0f0b19; color: #f0e8ff; border: 1px solid #594679; border-radius: 10px; padding: .6rem; }
 button { border: 0; padding: .65rem .8rem; border-radius: 12px; background: #9b5cff; color: #fff; cursor: pointer; }
 button { white-space: normal; line-height: 1.2; }
-.app-shell { height: 100vh; display: grid; grid-template-columns: var(--menu-width, 300px) 10px minmax(0, 1fr); overflow: hidden; }
-.app-shell.menu-collapsed { grid-template-columns: 62px minmax(0, 1fr); }
+.app-shell { height: 100vh; display: grid; grid-template-columns: var(--menu-width, 250px) 8px minmax(0, 1fr); overflow: hidden; }
+.app-shell.menu-collapsed { grid-template-columns: 52px minmax(0, 1fr); }
 aside { background: #120d1f; border-right: 1px solid #402d63; padding: .75rem; display: grid; align-content: start; gap: .45rem; overflow-y: auto; overflow-x: hidden; z-index: 4; font-size: clamp(.66rem, .52rem + .45vw, 1rem); }
-aside button { width: 100%; min-width: 0; padding: clamp(.32rem, .18rem + .45vw, .62rem) clamp(.32rem, .22rem + .45vw, .72rem); font-size: clamp(.62rem, .5rem + .45vw, .96rem); overflow-wrap: anywhere; }
+aside button { width: 100%; min-width: 0; padding: clamp(.28rem, .14rem + .42vw, .52rem) clamp(.28rem, .16rem + .4vw, .6rem); font-size: clamp(.58rem, .46rem + .4vw, .9rem); overflow-wrap: anywhere; }
 .menu-toggle { position: sticky; top: 0; z-index: 6; }
 .menu-resizer { background: linear-gradient(180deg, #6a4ab4, #3b2a61); cursor: col-resize; }
 .tool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: .35rem; }
