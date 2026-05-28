@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useCanvasViewport, clamp } from './hooks/useCanvasViewport'
 import { createModuleItem, moduleOptions, normalizeModuleItem } from './models/modules'
+import { getSupabaseClient } from './lib/supabaseClient'
 
 // =========================
 // Configuración base canvas
@@ -202,6 +203,7 @@ function App() {
   const clientIdRef = useRef(randomId())
   const musicEventDedupRef = useRef(new Set())
   const musicRealtimeRef = useRef(null)
+  const roomSlug = useMemo(() => room.name?.trim()?.toLowerCase().replaceAll(' ', '-') || 'default', [room.name])
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
   useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
@@ -432,25 +434,65 @@ function App() {
   const emitMusicEvent = (partialEvent) => {
     const event = { ...partialEvent, id: randomId(), at: Date.now(), by: clientIdRef.current }
     applyMusicEvent(event)
-    if (musicRealtimeRef.current?.postMessage) musicRealtimeRef.current.postMessage(event)
+    if (musicRealtimeRef.current?.transport === 'supabase') {
+      musicRealtimeRef.current.send(event)
+      return
+    }
+    if (musicRealtimeRef.current?.transport === 'broadcast') musicRealtimeRef.current.send(event)
   }
 
   useEffect(() => {
-    const roomKey = room.name?.trim()?.toLowerCase().replaceAll(' ', '-') || 'default'
-    const channel = new BroadcastChannel(`achantes-music-${roomKey}`)
-    const onMessage = (message) => {
-      const event = message?.data
-      if (!event || event.by === clientIdRef.current) return
-      applyMusicEvent(event)
+    let stopped = false
+    let cleanup = () => {}
+
+    const setup = async () => {
+      const supabase = await getSupabaseClient()
+      if (stopped) return
+      if (supabase) {
+        const channelName = `room:${roomSlug}:music`
+        const channel = supabase.channel(channelName, { config: { broadcast: { self: false } } })
+          .on('broadcast', { event: 'music-event' }, ({ payload }) => {
+            if (!payload || payload.by === clientIdRef.current) return
+            applyMusicEvent(payload)
+          })
+        await channel.subscribe()
+        musicRealtimeRef.current = {
+          transport: 'supabase',
+          send: (event) => channel.send({ type: 'broadcast', event: 'music-event', payload: event }),
+        }
+        cleanup = () => {
+          supabase.removeChannel(channel)
+          if (musicRealtimeRef.current?.transport === 'supabase') musicRealtimeRef.current = null
+        }
+        notify('Música conectada por Supabase Realtime ✅')
+        return
+      }
+
+      const fallback = new BroadcastChannel(`achantes-music-${roomSlug}`)
+      const onMessage = (message) => {
+        const event = message?.data
+        if (!event || event.by === clientIdRef.current) return
+        applyMusicEvent(event)
+      }
+      fallback.addEventListener('message', onMessage)
+      musicRealtimeRef.current = {
+        transport: 'broadcast',
+        send: (event) => fallback.postMessage(event),
+      }
+      cleanup = () => {
+        fallback.removeEventListener('message', onMessage)
+        fallback.close()
+        if (musicRealtimeRef.current?.transport === 'broadcast') musicRealtimeRef.current = null
+      }
+      notify('Supabase no configurado: usando sync local (misma PC).')
     }
-    channel.addEventListener('message', onMessage)
-    musicRealtimeRef.current = channel
+
+    setup()
     return () => {
-      channel.removeEventListener('message', onMessage)
-      channel.close()
-      if (musicRealtimeRef.current === channel) musicRealtimeRef.current = null
+      stopped = true
+      cleanup()
     }
-  }, [room.name])
+  }, [roomSlug])
 
   const addItem = (type) => {
     const nextItem = createModuleItem({
