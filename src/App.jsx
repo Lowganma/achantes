@@ -462,7 +462,7 @@ function App() {
         if (roomError) throw new Error(`rooms query failed: ${roomError.message}`)
         let roomId = existingRoom?.id
         if (!roomId) {
-          const { data: createdRoom, error: createRoomError } = await supabase.from('rooms').insert({ slug: roomSlug, name: room.name || roomSlug }).select('id,slug').single()
+          const { data: createdRoom, error: createRoomError } = await supabase.from('rooms').insert({ slug: roomSlug, owner_name: room.name || roomSlug }).select('id,slug').single()
           if (createRoomError) throw new Error(`rooms create failed: ${createRoomError.message}`)
           roomId = createdRoom?.id
         }
@@ -470,19 +470,20 @@ function App() {
         roomIdRef.current = roomId
         console.log('resolved room_id:', roomId)
 
-        const { data: stateRow, error: stateError } = await supabase.from('music_state').select('id, room_id').eq('room_id', roomId).maybeSingle()
+        const { data: stateRow, error: stateError } = await supabase.from('music_state').select('room_id').eq('room_id', roomId).maybeSingle()
         if (stateError) throw new Error(`music_state query failed: ${stateError.message}`)
-        if (!stateRow?.id) {
+        if (!stateRow?.room_id) {
           const firstMusicItem = room.items.find((item) => item.type === 'music')
+          const defaultModuleItemId = firstMusicItem?.id || `music-${roomId}`
           const { error: stateInsertError } = await supabase.from('music_state').insert({
             room_id: roomId,
-            module_item_id: firstMusicItem?.id || null,
+            module_item_id: defaultModuleItemId,
             current_track_url: firstMusicItem?.url || firstMusicItem?.editUrl || null,
             current_video_id: firstMusicItem?.videoId || null,
             embed_url: firstMusicItem?.content || null,
             status: firstMusicItem?.status || 'paused',
             position_ms: Number(firstMusicItem?.positionMs) || 0,
-            event_id: null,
+            event_id: `initial-${clientIdRef.current}`,
             updated_by: clientIdRef.current,
           })
           if (stateInsertError) throw new Error(`music_state create failed: ${stateInsertError.message}`)
@@ -513,7 +514,7 @@ function App() {
           send: async (event) => {
             const row = {
               room_id: roomIdRef.current,
-              module_item_id: event.itemId,
+              module_item_id: event.itemId || `music-${roomIdRef.current}`,
               event_type: event.type,
               payload: event,
               client_event_id: event.id,
@@ -531,7 +532,7 @@ function App() {
             const payload = event.payload || {}
             const { error: updateStateError } = await supabase.from('music_state').upsert({
               room_id: roomIdRef.current,
-              module_item_id: event.itemId,
+              module_item_id: event.itemId || `music-${roomIdRef.current}`,
               current_track_url: payload.url || null,
               current_video_id: payload.videoId || null,
               embed_url: payload.content || null,
