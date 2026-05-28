@@ -37,10 +37,13 @@ export const defaultItemsByType = {
     videoId: '',
     status: 'paused',
     volume: 100,
+    positionMs: 0,
     editUrl: '',
     w: 320,
     h: 220,
     collapsed: false,
+    lastMusicEventId: '',
+    lastMusicEventAt: 0,
   },
 }
 
@@ -79,7 +82,10 @@ export const normalizeModuleItem = ({ item, clamp, worldWidth, worldHeight, base
     videoId: typeof item.videoId === 'string' ? item.videoId : (typeDefaults.videoId || ''),
     status: item.status === 'playing' ? 'playing' : 'paused',
     volume: Number.isFinite(Number(item.volume)) ? Math.max(0, Math.min(100, Number(item.volume))) : (typeDefaults.volume ?? 100),
+    positionMs: Number.isFinite(Number(item.positionMs)) ? Math.max(0, Number(item.positionMs)) : (typeDefaults.positionMs ?? 0),
     collapsed: item.collapsed === true,
+    lastMusicEventId: typeof item.lastMusicEventId === 'string' ? item.lastMusicEventId : (typeDefaults.lastMusicEventId || ''),
+    lastMusicEventAt: Number.isFinite(Number(item.lastMusicEventAt)) ? Number(item.lastMusicEventAt) : (typeDefaults.lastMusicEventAt || 0),
     version: 1,
   }
 }
