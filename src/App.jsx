@@ -144,6 +144,12 @@ const getYouTubeEmbedUrl = (videoId = '') => {
   return `https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1&enablejsapi=1`
 }
 
+const getRoomSlugFromUrl = () => {
+  const path = window.location.pathname || ''
+  const match = path.match(/^\/room\/([^/?#]+)/i)
+  return (match?.[1] || '').trim().toLowerCase()
+}
+
 function App() {
   const [stage, setStage] = useState('landing')
   const [room, setRoom] = useState(defaultRoom)
@@ -203,7 +209,9 @@ function App() {
   const clientIdRef = useRef(randomId())
   const musicEventDedupRef = useRef(new Set())
   const musicRealtimeRef = useRef(null)
-  const roomSlug = useMemo(() => room.name?.trim()?.toLowerCase().replaceAll(' ', '-') || 'default', [room.name])
+  const [roomSlug, setRoomSlug] = useState(() => getRoomSlugFromUrl() || 'default')
+  const [roomSyncStatus, setRoomSyncStatus] = useState({ mode: 'local', reason: 'Inicializando sync...' })
+  const roomIdRef = useRef(null)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
   useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
@@ -449,21 +457,99 @@ function App() {
       const supabase = await getSupabaseClient()
       if (stopped) return
       if (supabase) {
-        const channelName = `room:${roomSlug}:music`
-        const channel = supabase.channel(channelName, { config: { broadcast: { self: false } } })
-          .on('broadcast', { event: 'music-event' }, ({ payload }) => {
-            if (!payload || payload.by === clientIdRef.current) return
-            applyMusicEvent(payload)
+        console.log('resolved room slug:', roomSlug)
+        const { data: existingRoom, error: roomError } = await supabase.from('rooms').select('id,slug').eq('slug', roomSlug).maybeSingle()
+        if (roomError) throw new Error(`rooms query failed: ${roomError.message}`)
+        let roomId = existingRoom?.id
+        if (!roomId) {
+          const { data: createdRoom, error: createRoomError } = await supabase.from('rooms').insert({ slug: roomSlug, owner_name: room.name || roomSlug }).select('id,slug').single()
+          if (createRoomError) throw new Error(`rooms create failed: ${createRoomError.message}`)
+          roomId = createdRoom?.id
+        }
+        if (!roomId) throw new Error('room_id missing after create/query')
+        roomIdRef.current = roomId
+        console.log('resolved room_id:', roomId)
+
+        const { data: stateRow, error: stateError } = await supabase.from('music_state').select('room_id').eq('room_id', roomId).maybeSingle()
+        if (stateError) throw new Error(`music_state query failed: ${stateError.message}`)
+        if (!stateRow?.room_id) {
+          const firstMusicItem = room.items.find((item) => item.type === 'music')
+          const defaultModuleItemId = firstMusicItem?.id || `music-${roomId}`
+          const { error: stateInsertError } = await supabase.from('music_state').insert({
+            room_id: roomId,
+            module_item_id: defaultModuleItemId,
+            current_track_url: firstMusicItem?.url || firstMusicItem?.editUrl || null,
+            current_video_id: firstMusicItem?.videoId || null,
+            embed_url: firstMusicItem?.content || null,
+            status: firstMusicItem?.status || 'paused',
+            position_ms: Number(firstMusicItem?.positionMs) || 0,
+            event_id: `initial-${clientIdRef.current}`,
+            updated_by: clientIdRef.current,
           })
-        await channel.subscribe()
+          if (stateInsertError) throw new Error(`music_state create failed: ${stateInsertError.message}`)
+          console.log('music_state loaded/created: created')
+        } else {
+          console.log('music_state loaded/created: loaded')
+        }
+
+        const channelName = `room:${roomId}:music-events`
+        console.log('realtime channel creating:', channelName)
+        const channel = supabase.channel(channelName)
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'music_events', filter: `room_id=eq.${roomId}` }, ({ new: payload }) => {
+            console.log('realtime payload received:', payload)
+            if (!payload || payload.created_by === clientIdRef.current) return
+            applyMusicEvent(payload.payload)
+          })
+
+        await new Promise((resolve, reject) => {
+          channel.subscribe((status, err) => {
+            console.log('realtime subscription error/status:', status, err || null)
+            if (status === 'SUBSCRIBED') resolve()
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') reject(new Error(`Realtime status ${status}`))
+          })
+        })
+        console.log('realtime channel subscribed')
         musicRealtimeRef.current = {
           transport: 'supabase',
-          send: (event) => channel.send({ type: 'broadcast', event: 'music-event', payload: event }),
+          send: async (event) => {
+            const row = {
+              room_id: roomIdRef.current,
+              module_item_id: event.itemId || `music-${roomIdRef.current}`,
+              event_type: event.type,
+              payload: event,
+              client_event_id: event.id,
+              created_by: clientIdRef.current,
+            }
+            console.log('music event insert start:', row)
+            const { data: insertedEvent, error: eventError } = await supabase.from('music_events').insert(row).select('id').single()
+            if (eventError) {
+              console.error('music event insert error:', eventError)
+              setRoomSyncStatus({ mode: 'local', reason: `Fallback por error insert: ${eventError.message}` })
+              return
+            }
+            console.log('music event insert success:', insertedEvent)
+            const eventId = insertedEvent?.id || null
+            const payload = event.payload || {}
+            const { error: updateStateError } = await supabase.from('music_state').upsert({
+              room_id: roomIdRef.current,
+              module_item_id: event.itemId || `music-${roomIdRef.current}`,
+              current_track_url: payload.url || null,
+              current_video_id: payload.videoId || null,
+              embed_url: payload.content || null,
+              status: payload.status || (event.type === MUSIC_EVENT_TYPES.PLAY ? 'playing' : event.type === MUSIC_EVENT_TYPES.PAUSE ? 'paused' : null),
+              position_ms: Number(payload.positionMs) || 0,
+              event_id: eventId,
+              updated_by: clientIdRef.current,
+            }, { onConflict: 'room_id' })
+            if (updateStateError) console.error('music_state upsert error:', updateStateError)
+          },
         }
         cleanup = () => {
           supabase.removeChannel(channel)
           if (musicRealtimeRef.current?.transport === 'supabase') musicRealtimeRef.current = null
         }
+        setRoomSyncStatus({ mode: 'supabase', reason: 'Sync Supabase activo' })
+        console.log('realtime subscribed')
         notify('Música conectada por Supabase Realtime ✅')
         return
       }
@@ -479,6 +565,7 @@ function App() {
         transport: 'broadcast',
         send: (event) => fallback.postMessage(event),
       }
+      setRoomSyncStatus({ mode: 'local', reason: 'fallback reason: Supabase no configurado o cliente no disponible' })
       cleanup = () => {
         fallback.removeEventListener('message', onMessage)
         fallback.close()
@@ -863,6 +950,9 @@ function App() {
 
   const createRoom = (event) => {
     event.preventDefault()
+    const nextSlug = form.name.trim().toLowerCase().replaceAll(' ', '-')
+    setRoomSlug(nextSlug)
+    window.history.replaceState({}, '', `/room/${nextSlug}`)
     setRoom((prevRoom) => ({ ...prevRoom, ...form }))
     setStage('room')
   }
@@ -1132,7 +1222,9 @@ function App() {
                       {item.collapsed ? 'Expandir' : 'Minimizar'}
                     </button>
                   </div>
-                  <small>{item.status === 'playing' ? 'Reproduciendo localmente' : 'En pausa (local)'}</small>
+                  <small>
+                    {item.status === 'playing' ? 'Reproduciendo en sala' : 'En pausa en sala'} · {roomSyncStatus.mode === 'supabase' ? 'Conectado a sala (Supabase)' : `Local: ${roomSyncStatus.reason}`}
+                  </small>
                   <input
                         onMouseDown={(event) => event.stopPropagation()}
                         className={item.collapsed ? 'is-hidden' : ''}
