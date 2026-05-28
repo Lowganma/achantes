@@ -11,12 +11,18 @@ const WORLD_HEIGHT = 4000
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 3
 const MENU_WIDTH_KEY = 'achantes-menu-width-v1'
-const MIN_MENU_WIDTH = 180
-const MAX_MENU_WIDTH = 460
+const MIN_MENU_WIDTH = 150
+const MAX_MENU_WIDTH = 360
 const MAX_HISTORY_ENTRIES = 40
 const MAX_PASTE_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PASTE_IMAGE_DIMENSION = 400
 const MAX_BACKGROUND_IMAGE_BYTES = 4 * 1024 * 1024
+const MUSIC_EVENT_TYPES = {
+  PLAY: 'MUSIC_PLAY',
+  PAUSE: 'MUSIC_PAUSE',
+  SEEK: 'MUSIC_SEEK',
+  CHANGE_TRACK: 'MUSIC_CHANGE_TRACK',
+}
 
 // Z-index lógico por familias
 const Z_BASE_BACKGROUND = 1
@@ -193,6 +199,9 @@ function App() {
   const cropStartRef = useRef(null)
   const [cropRect, setCropRect] = useState(null)
   const [toast, setToast] = useState('')
+  const clientIdRef = useRef(randomId())
+  const musicEventDedupRef = useRef(new Set())
+  const musicRealtimeRef = useRef(null)
 
   useEffect(() => { drawTargetRef.current = drawTarget }, [drawTarget])
   useEffect(() => { localStorage.setItem(MENU_WIDTH_KEY, String(menuWidth)) }, [menuWidth])
@@ -392,15 +401,56 @@ function App() {
       notify('URL de YouTube inválida. Usa un link de youtube.com o youtu.be.')
       return
     }
-    updateItem(item.id, {
-      provider: 'youtube',
-      url: rawUrl,
-      videoId,
-      content: getYouTubeEmbedUrl(videoId),
-      title: item.title || 'Música de la sala',
-      status: 'paused',
+    emitMusicEvent({
+      type: MUSIC_EVENT_TYPES.CHANGE_TRACK,
+      itemId: item.id,
+      payload: {
+        provider: 'youtube',
+        url: rawUrl,
+        videoId,
+        content: getYouTubeEmbedUrl(videoId),
+        title: item.title || 'Música de la sala',
+        status: 'paused',
+        positionMs: 0,
+      },
     })
   }
+
+  const applyMusicEvent = (event) => {
+    if (!event?.itemId || !event?.type) return
+    const dedupId = event.id || `${event.type}-${event.itemId}-${event.at || 0}`
+    if (musicEventDedupRef.current.has(dedupId)) return
+    musicEventDedupRef.current.add(dedupId)
+    if (musicEventDedupRef.current.size > 1000) musicEventDedupRef.current.clear()
+    const patchBase = { lastMusicEventId: dedupId, lastMusicEventAt: event.at || Date.now() }
+    if (event.type === MUSIC_EVENT_TYPES.PLAY) updateItem(event.itemId, { ...patchBase, status: 'playing' }, { recordHistory: false })
+    if (event.type === MUSIC_EVENT_TYPES.PAUSE) updateItem(event.itemId, { ...patchBase, status: 'paused' }, { recordHistory: false })
+    if (event.type === MUSIC_EVENT_TYPES.SEEK) updateItem(event.itemId, { ...patchBase, positionMs: Number(event.payload?.positionMs) || 0 }, { recordHistory: false })
+    if (event.type === MUSIC_EVENT_TYPES.CHANGE_TRACK) updateItem(event.itemId, { ...patchBase, ...(event.payload || {}) }, { recordHistory: false })
+  }
+
+  const emitMusicEvent = (partialEvent) => {
+    const event = { ...partialEvent, id: randomId(), at: Date.now(), by: clientIdRef.current }
+    applyMusicEvent(event)
+    if (musicRealtimeRef.current?.postMessage) musicRealtimeRef.current.postMessage(event)
+  }
+
+  useEffect(() => {
+    const roomKey = room.name?.trim()?.toLowerCase().replaceAll(' ', '-') || 'default'
+    const channel = new BroadcastChannel(`achantes-music-${roomKey}`)
+    const onMessage = (message) => {
+      const event = message?.data
+      if (!event || event.by === clientIdRef.current) return
+      applyMusicEvent(event)
+    }
+    channel.addEventListener('message', onMessage)
+    musicRealtimeRef.current = channel
+    return () => {
+      channel.removeEventListener('message', onMessage)
+      channel.close()
+      if (musicRealtimeRef.current === channel) musicRealtimeRef.current = null
+    }
+  }, [room.name])
 
   const addItem = (type) => {
     const nextItem = createModuleItem({
@@ -1051,8 +1101,12 @@ function App() {
                       />
                       <div className={`music-module-actions ${item.collapsed ? 'is-hidden' : ''}`}>
                         <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => setMusicFromUrl(item)}>Cargar YouTube</button>
-                        <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={() => updateItem(item.id, { status: item.status === 'playing' ? 'paused' : 'playing' })}>
-                          {item.status === 'playing' ? 'Pausar local' : 'Marcar play local'}
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onClick={() => emitMusicEvent({ type: item.status === 'playing' ? MUSIC_EVENT_TYPES.PAUSE : MUSIC_EVENT_TYPES.PLAY, itemId: item.id })}
+                        >
+                          {item.status === 'playing' ? 'Pausar sala' : 'Reproducir sala'}
                         </button>
                       </div>
                   {item.content ? (
