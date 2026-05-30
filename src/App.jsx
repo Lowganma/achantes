@@ -207,6 +207,7 @@ function App() {
   const [cropRect, setCropRect] = useState(null)
   const [toast, setToast] = useState('')
   const clientIdRef = useRef(randomId())
+  console.log('current clientId:', clientIdRef.current)
   const musicEventDedupRef = useRef(new Set())
   const musicRealtimeRef = useRef(null)
   const [roomSlug, setRoomSlug] = useState(() => getRoomSlugFromUrl() || 'default')
@@ -404,6 +405,7 @@ function App() {
   }
 
   const setMusicFromUrl = (item) => {
+    console.log('button clicked: load youtube', { itemId: item.id })
     const rawUrl = (item.editUrl || '').trim()
     const videoId = getYouTubeVideoId(rawUrl)
     if (!videoId) {
@@ -426,10 +428,14 @@ function App() {
     })
   }
 
-  const applyMusicEvent = (event) => {
+  const applyMusicEvent = (event, { source = 'local' } = {}) => {
     if (!event?.itemId || !event?.type) return
+    if (source === 'remote') console.log('applyMusicEvent from remote:', event)
     const dedupId = event.id || `${event.type}-${event.itemId}-${event.at || 0}`
-    if (musicEventDedupRef.current.has(dedupId)) return
+    if (musicEventDedupRef.current.has(dedupId)) {
+      console.log('music event dedup skipped:', { dedupId, source, by: event.by, currentClientId: clientIdRef.current })
+      return
+    }
     musicEventDedupRef.current.add(dedupId)
     if (musicEventDedupRef.current.size > 1000) musicEventDedupRef.current.clear()
     const patchBase = { lastMusicEventId: dedupId, lastMusicEventAt: event.at || Date.now() }
@@ -441,6 +447,7 @@ function App() {
 
   const emitMusicEvent = (partialEvent) => {
     const event = { ...partialEvent, id: randomId(), at: Date.now(), by: clientIdRef.current }
+    console.log('emitMusicEvent called:', { event, currentClientId: clientIdRef.current, roomId: roomIdRef.current })
     applyMusicEvent(event)
     if (musicRealtimeRef.current?.transport === 'supabase') {
       musicRealtimeRef.current.send(event)
@@ -469,6 +476,7 @@ function App() {
         if (!roomId) throw new Error('room_id missing after create/query')
         roomIdRef.current = roomId
         console.log('resolved room_id:', roomId)
+        console.log('current clientId:', clientIdRef.current)
 
         const { data: stateRow, error: stateError } = await supabase.from('music_state').select('room_id').eq('room_id', roomId).maybeSingle()
         if (stateError) throw new Error(`music_state query failed: ${stateError.message}`)
@@ -493,12 +501,26 @@ function App() {
         }
 
         const channelName = `room:${roomId}:music-events`
+        const realtimeFilter = `room_id=eq.${roomId}`
         console.log('realtime channel creating:', channelName)
+        console.log('realtime filter:', realtimeFilter)
         const channel = supabase.channel(channelName)
-          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'music_events', filter: `room_id=eq.${roomId}` }, ({ new: payload }) => {
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'music_events', filter: realtimeFilter }, ({ new: payload }) => {
             console.log('realtime payload received:', payload)
-            if (!payload || payload.created_by === clientIdRef.current) return
-            applyMusicEvent(payload.payload)
+            if (!payload) return
+            if (payload.created_by === clientIdRef.current) {
+              console.log('ignored own event:', { createdBy: payload.created_by, currentClientId: clientIdRef.current, clientEventId: payload.client_event_id })
+              return
+            }
+            const musicEvent = {
+              ...(payload.payload || {}),
+              id: payload.payload?.id || payload.client_event_id || payload.id,
+              type: payload.payload?.type || payload.event_type,
+              itemId: payload.payload?.itemId || payload.module_item_id,
+              by: payload.payload?.by || payload.created_by,
+              at: payload.payload?.at || new Date(payload.created_at).getTime(),
+            }
+            applyMusicEvent(musicEvent, { source: 'remote' })
           })
 
         await new Promise((resolve, reject) => {
@@ -512,36 +534,57 @@ function App() {
         musicRealtimeRef.current = {
           transport: 'supabase',
           send: async (event) => {
+            const currentMusicItem = room.items.find((item) => item.id === event.itemId)
+            const eventPayload = {
+              type: event.type,
+              itemId: event.itemId,
+              payload: event.payload || {},
+              id: event.id,
+              by: event.by,
+              at: event.at,
+            }
             const row = {
               room_id: roomIdRef.current,
               module_item_id: event.itemId || `music-${roomIdRef.current}`,
               event_type: event.type,
-              payload: event,
+              payload: eventPayload,
               client_event_id: event.id,
               created_by: clientIdRef.current,
             }
+            console.log('event insert start:', row)
             console.log('music event insert start:', row)
             const { data: insertedEvent, error: eventError } = await supabase.from('music_events').insert(row).select('id').single()
             if (eventError) {
+              console.error('event insert error:', eventError)
               console.error('music event insert error:', eventError)
               setRoomSyncStatus({ mode: 'local', reason: `Fallback por error insert: ${eventError.message}` })
               return
             }
+            console.log('event insert success:', insertedEvent)
             console.log('music event insert success:', insertedEvent)
-            const eventId = insertedEvent?.id || null
+            const eventId = insertedEvent?.id || event.id
             const payload = event.payload || {}
+            const { data: existingMusicState, error: existingStateError } = await supabase
+              .from('music_state')
+              .select('current_track_url,current_video_id,embed_url,position_ms,status')
+              .eq('room_id', roomIdRef.current)
+              .maybeSingle()
+            if (existingStateError) console.error('music_state current state query error:', existingStateError)
+            const nextStatus = payload.status || (event.type === MUSIC_EVENT_TYPES.PLAY ? 'playing' : event.type === MUSIC_EVENT_TYPES.PAUSE ? 'paused' : existingMusicState?.status || currentMusicItem?.status || 'paused')
+            const nextPositionMs = Number.isFinite(Number(payload.positionMs)) ? Number(payload.positionMs) : Number(existingMusicState?.position_ms ?? currentMusicItem?.positionMs) || 0
             const { error: updateStateError } = await supabase.from('music_state').upsert({
               room_id: roomIdRef.current,
               module_item_id: event.itemId || `music-${roomIdRef.current}`,
-              current_track_url: payload.url || null,
-              current_video_id: payload.videoId || null,
-              embed_url: payload.content || null,
-              status: payload.status || (event.type === MUSIC_EVENT_TYPES.PLAY ? 'playing' : event.type === MUSIC_EVENT_TYPES.PAUSE ? 'paused' : null),
-              position_ms: Number(payload.positionMs) || 0,
+              current_track_url: payload.url || currentMusicItem?.url || currentMusicItem?.editUrl || existingMusicState?.current_track_url || null,
+              current_video_id: payload.videoId || currentMusicItem?.videoId || existingMusicState?.current_video_id || null,
+              embed_url: payload.content || currentMusicItem?.content || existingMusicState?.embed_url || null,
+              status: nextStatus,
+              position_ms: nextPositionMs,
               event_id: eventId,
               updated_by: clientIdRef.current,
             }, { onConflict: 'room_id' })
             if (updateStateError) console.error('music_state upsert error:', updateStateError)
+            else console.log('music_state upsert success:', { roomId: roomIdRef.current, eventId, status: nextStatus })
           },
         }
         cleanup = () => {
@@ -557,8 +600,13 @@ function App() {
       const fallback = new BroadcastChannel(`achantes-music-${roomSlug}`)
       const onMessage = (message) => {
         const event = message?.data
-        if (!event || event.by === clientIdRef.current) return
-        applyMusicEvent(event)
+        if (!event) return
+        if (event.by === clientIdRef.current) {
+          console.log('ignored own event:', { createdBy: event.by, currentClientId: clientIdRef.current, clientEventId: event.id })
+          return
+        }
+        console.log('realtime payload received:', event)
+        applyMusicEvent(event, { source: 'remote' })
       }
       fallback.addEventListener('message', onMessage)
       musicRealtimeRef.current = {
@@ -1238,7 +1286,10 @@ function App() {
                         <button
                           type="button"
                           onMouseDown={(event) => event.stopPropagation()}
-                          onClick={() => emitMusicEvent({ type: item.status === 'playing' ? MUSIC_EVENT_TYPES.PAUSE : MUSIC_EVENT_TYPES.PLAY, itemId: item.id })}
+                          onClick={() => {
+                            console.log('button clicked: play/pause', { itemId: item.id, nextType: item.status === 'playing' ? MUSIC_EVENT_TYPES.PAUSE : MUSIC_EVENT_TYPES.PLAY })
+                            emitMusicEvent({ type: item.status === 'playing' ? MUSIC_EVENT_TYPES.PAUSE : MUSIC_EVENT_TYPES.PLAY, itemId: item.id })
+                          }}
                         >
                           {item.status === 'playing' ? 'Pausar sala' : 'Reproducir sala'}
                         </button>
